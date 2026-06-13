@@ -3,7 +3,8 @@ import {
   averageCombatValueForPiece,
   getCombatProfileForPiece,
   getCombatProfileNameForPiece,
-  getPieceAbbreviation,
+  getPieceDisplayLabel,
+  PieceLabelMode,
 } from "../../engine/data/classProfiles";
 import { classifyMove, getLegalMovesForPiece } from "../../engine/movement";
 import { GameState, MoveClassificationKind, Piece } from "../../engine/types";
@@ -11,9 +12,10 @@ import { GameState, MoveClassificationKind, Piece } from "../../engine/types";
 type SelectedPiecePanelProps = {
   state: GameState;
   selectedPiece?: Piece;
+  labelMode: PieceLabelMode;
 };
 
-export function SelectedPiecePanel({ state, selectedPiece }: SelectedPiecePanelProps) {
+export function SelectedPiecePanel({ state, selectedPiece, labelMode }: SelectedPiecePanelProps) {
   const selectedSquare = selectedPiece ? getPiecePosition(state.board, selectedPiece.id) : undefined;
   const legalMoves = selectedPiece ? getLegalMovesForPiece(state, selectedPiece.id) : [];
   const grouped = {
@@ -31,7 +33,7 @@ export function SelectedPiecePanel({ state, selectedPiece }: SelectedPiecePanelP
             <strong>
               {selectedPiece.side} {selectedPiece.type} at {coordinateLabel(selectedSquare)}
             </strong>
-            <span>Board label: {getPieceAbbreviation(selectedPiece)}</span>
+            <span>Board label: {getPieceDisplayLabel(selectedPiece, labelMode)}</span>
             <span>Promoted: {selectedPiece.promoted ? "yes" : "no"}</span>
             <span>
               Profile: {getCombatProfileNameForPiece(selectedPiece)} [{getCombatProfileForPiece(selectedPiece).join(", ")}]

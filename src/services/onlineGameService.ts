@@ -2,8 +2,14 @@ import { doc, getDoc, onSnapshot, runTransaction, setDoc, Unsubscribe } from "fi
 import { getLegalMove } from "../engine/movement";
 import { applyMove, createInitialGameState } from "../engine/gameState";
 import { annotateLastMove } from "../engine/history";
-import { GameState, PlayerSide } from "../engine/types";
-import { OnlineGameDocument, OnlineMoveInput, OnlinePlayerRole } from "../engine/online/onlineTypes";
+import { PlayerSide } from "../engine/types";
+import { OnlineGameDocument, OnlineGameViewDocument, OnlineMoveInput, OnlinePlayerRole } from "../engine/online/onlineTypes";
+import {
+  assertNoNestedArrays,
+  deserializeOnlineGameFromFirestore,
+  serializeOnlineGameForFirestore,
+  serializeGameStateForFirestore,
+} from "../engine/online/firestoreSerialization";
 import { firebaseConfigured, requireFirestore } from "./firebase";
 
 const PLAYER_ID_KEY = "frontierChessPlayerId";
@@ -27,20 +33,19 @@ export function getOrCreatePlayerId(): string {
 export async function createOnlineGame(playerId: string): Promise<string> {
   const gameId = createRoomCode();
   const now = Date.now();
-  const gameState = sanitizeForFirestore(createInitialGameState()) as GameState;
-  const game: OnlineGameDocument = {
+  const game = serializeOnlineGameForFirestore({
     gameId,
     createdAt: now,
     updatedAt: now,
     status: "waiting",
     currentPlayer: "Blue",
     bluePlayerId: playerId,
-    gameState,
-    moveHistory: [],
+    gameState: createInitialGameState(),
     winner: null,
     reason: null,
-  };
+  });
 
+  assertNoNestedArraysInDevelopment(game, "createOnlineGame");
   await setDoc(doc(requireFirestore(), GAME_COLLECTION, gameId), sanitizeForFirestore(game));
   return gameId;
 }
@@ -79,13 +84,13 @@ export async function joinOnlineGame(gameId: string, playerId: string): Promise<
 
 export function subscribeToOnlineGame(
   gameId: string,
-  callback: (game: OnlineGameDocument | null) => void,
+  callback: (game: OnlineGameViewDocument | null) => void,
   onError?: (error: Error) => void,
 ): Unsubscribe {
   return onSnapshot(
     doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId)),
     (snapshot) => {
-      callback(snapshot.exists() ? (snapshot.data() as OnlineGameDocument) : null);
+      callback(snapshot.exists() ? deserializeOnlineGameFromFirestore(snapshot.data() as OnlineGameDocument) : null);
     },
     (error) => onError?.(error),
   );
@@ -100,10 +105,11 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
       throw new Error("Online game was not found.");
     }
 
-    const game = snapshot.data() as OnlineGameDocument;
-    if (game.status !== "active") {
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    if (storedGame.status !== "active") {
       throw new Error("This online game is not active.");
     }
+    const game = deserializeOnlineGameFromFirestore(storedGame);
 
     const side = game.currentPlayer;
     assertPlayerOwnsTurn(game, playerId, side);
@@ -122,30 +128,36 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
     const nextState = annotateLastMove(applied, "Human");
     const status = nextState.winner ? "finished" : "active";
     const reason = nextState.winner ? "kingCaptured" : null;
+    const serializedState = serializeGameStateForFirestore(nextState);
     const nextGame: Partial<OnlineGameDocument> = {
       updatedAt: Date.now(),
       status,
       currentPlayer: nextState.turn,
-      gameState: nextState,
-      moveHistory: nextState.moveHistory as OnlineGameDocument["moveHistory"],
+      gameState: serializedState,
+      moveHistory: serializedState.moveHistory,
       winner: nextState.winner ?? null,
       reason,
     };
 
+    assertNoNestedArraysInDevelopment(nextGame, "submitOnlineMove");
     transaction.update(ref, sanitizeForFirestoreRecord(nextGame));
   });
 }
 
-export async function getOnlineGame(gameId: string): Promise<OnlineGameDocument | null> {
+export async function getOnlineGame(gameId: string): Promise<OnlineGameViewDocument | null> {
   const snapshot = await getDoc(doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId)));
-  return snapshot.exists() ? (snapshot.data() as OnlineGameDocument) : null;
+  return snapshot.exists() ? deserializeOnlineGameFromFirestore(snapshot.data() as OnlineGameDocument) : null;
 }
 
 export function normalizeGameId(gameId: string): string {
   return gameId.trim().toUpperCase();
 }
 
-function assertPlayerOwnsTurn(game: OnlineGameDocument, playerId: string, side: PlayerSide): void {
+function assertPlayerOwnsTurn(
+  game: Pick<OnlineGameDocument, "bluePlayerId" | "redPlayerId">,
+  playerId: string,
+  side: PlayerSide,
+): void {
   if (side === "Blue" && game.bluePlayerId !== playerId) {
     throw new Error("It is Blue's turn, but this browser does not own Blue.");
   }
@@ -176,4 +188,10 @@ function sanitizeForFirestore(value: unknown): unknown {
 
 function sanitizeForFirestoreRecord(value: Record<string, unknown>): Record<string, unknown> {
   return sanitizeForFirestore(value) as Record<string, unknown>;
+}
+
+function assertNoNestedArraysInDevelopment(value: unknown, label: string): void {
+  if (import.meta.env.DEV) {
+    assertNoNestedArrays(value, label);
+  }
 }

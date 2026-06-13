@@ -6,6 +6,7 @@ import { MoveLog } from "./components/MoveLog";
 import { AIMoveExplanationPanel } from "./components/panels/AIMoveExplanationPanel";
 import { BalanceSimulatorPanel } from "./components/panels/BalanceSimulatorPanel";
 import { CombatResultPanel } from "./components/panels/CombatResultPanel";
+import { DisplaySettingsPanel } from "./components/panels/DisplaySettingsPanel";
 import { GameControlsPanel } from "./components/panels/GameControlsPanel";
 import { GameInfoPanel } from "./components/panels/GameInfoPanel";
 import { GameStatusPanel } from "./components/panels/GameStatusPanel";
@@ -25,6 +26,7 @@ import { chooseHeuristicMove, runBatchHeuristicSimulations, runHeuristicSimulati
 import { runBatchRandomSimulations, runRandomSimulation, stepRandomMove } from "./engine/simulation/simulator";
 import { BatchSimulationSummary, ScoredMoveChoice, SimulationResult } from "./engine/simulation/simulationTypes";
 import { ForcedDice, GameState, Position } from "./engine/types";
+import { PieceLabelMode } from "./engine/data/classProfiles";
 import { runRuleValidation } from "./engine/validation";
 import {
   createOnlineGame,
@@ -34,10 +36,13 @@ import {
   submitOnlineMove,
   subscribeToOnlineGame,
 } from "./services/onlineGameService";
-import { OnlineGameDocument, OnlinePlayerRole } from "./engine/online/onlineTypes";
+import { OnlineGameDocument, OnlineGameViewDocument, OnlinePlayerRole } from "./engine/online/onlineTypes";
+
+const PIECE_LABEL_MODE_STORAGE_KEY = "frontierChessPieceLabelMode";
 
 export function App() {
   const [state, setState] = useState(createInitialGameState);
+  const [pieceLabelMode, setPieceLabelMode] = useState<PieceLabelMode>(() => getStoredPieceLabelMode());
   const [gameMode, setGameMode] = useState<GameMode>("human-blue-vs-ai-red");
   const [aiStatus, setAIStatus] = useState<AIStatus>("idle");
   const [aiPlayOptions, setAIPlayOptions] = useState<AIPlayOptions>({
@@ -59,7 +64,7 @@ export function App() {
   const [onlineGameId, setOnlineGameId] = useState<string | undefined>();
   const [onlinePlayerId, setOnlinePlayerId] = useState<string | undefined>();
   const [onlineRole, setOnlineRole] = useState<OnlinePlayerRole | undefined>();
-  const [onlineGame, setOnlineGame] = useState<OnlineGameDocument | undefined>();
+  const [onlineGame, setOnlineGame] = useState<OnlineGameViewDocument | undefined>();
   const [onlineBusy, setOnlineBusy] = useState(false);
   const [onlineError, setOnlineError] = useState<string | undefined>();
   const pendingAITurnKeyRef = useRef<string | undefined>();
@@ -93,6 +98,10 @@ export function App() {
     console.log(validation.passed ? "All validation checks passed." : "Validation failed.");
     console.groupEnd();
   }, [validation]);
+
+  useEffect(() => {
+    window.localStorage.setItem(PIECE_LABEL_MODE_STORAGE_KEY, pieceLabelMode);
+  }, [pieceLabelMode]);
 
   useEffect(() => {
     if (onlineActive || replay.active || !isAITurn(state, gameMode) || state.winner || reachedMaxTurns || playOutcome) {
@@ -499,6 +508,7 @@ export function App() {
       left={
         <>
           <GameInfoPanel state={displayState} onReset={handleResetGame} />
+          <DisplaySettingsPanel pieceLabelMode={pieceLabelMode} onPieceLabelModeChange={setPieceLabelMode} />
           <OnlineGamePanel
             busy={onlineBusy}
             error={onlineError}
@@ -548,9 +558,9 @@ export function App() {
             onPrevious={() => startReplayAt(replay.index - 1)}
             onReturnLive={returnToLiveGame}
           />
-          <AIMoveExplanationPanel explanation={displayAIExplanation} />
-          <SelectedPiecePanel selectedPiece={selectedPiece} state={displayState} />
-          <CombatResultPanel state={displayState} />
+          <AIMoveExplanationPanel explanation={displayAIExplanation} labelMode={pieceLabelMode} />
+          <SelectedPiecePanel labelMode={pieceLabelMode} selectedPiece={selectedPiece} state={displayState} />
+          <CombatResultPanel labelMode={pieceLabelMode} state={displayState} />
           <section className="panel-block validation-summary">
             <h2>Validation</h2>
             <p className={validation.passed ? "validation-pass" : "validation-fail"}>
@@ -574,7 +584,13 @@ export function App() {
 
           {replay.active ? <div className="replay-banner">Replay Mode - normal play is paused</div> : null}
           <div className="board-zone">
-            <Board humanTurn={humanTurn} legalMoves={legalMoves} onSquareClick={handleSquareClick} state={displayState} />
+            <Board
+              humanTurn={humanTurn}
+              labelMode={pieceLabelMode}
+              legalMoves={legalMoves}
+              onSquareClick={handleSquareClick}
+              state={displayState}
+            />
           </div>
 
           <div className="territory-key" aria-label="Board territory key">
@@ -587,7 +603,7 @@ export function App() {
       }
       right={
         <>
-          <MoveLog history={displayState.moveHistory} />
+          <MoveLog history={displayState.moveHistory} labelMode={pieceLabelMode} />
           <SimulationPanel
             aiMode={aiMode}
             batchSummary={batchSummary}
@@ -643,4 +659,9 @@ function formatOnlineReason(reason: NonNullable<OnlineGameDocument["reason"]>): 
     case "noLegalMoves":
       return "Draw / no legal moves";
   }
+}
+
+function getStoredPieceLabelMode(): PieceLabelMode {
+  const stored = window.localStorage.getItem(PIECE_LABEL_MODE_STORAGE_KEY);
+  return stored === "traditionalChinese" ? "traditionalChinese" : "english";
 }

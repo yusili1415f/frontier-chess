@@ -1,4 +1,5 @@
 import { coordinateLabel, isFrontierLine, isFrontierZone, isHomeTerritory } from "../engine/board";
+import { PieceLabelMode } from "../engine/data/classProfiles";
 import { LegalMove, Piece as PieceModel, PlayerSide, Position } from "../engine/types";
 import { Piece } from "./Piece";
 
@@ -9,10 +10,11 @@ type SquareProps = {
   humanTurn: boolean;
   isSelected: boolean;
   legalMove?: LegalMove;
+  labelMode: PieceLabelMode;
   onClick: (position: Position) => void;
 };
 
-export function Square({ position, piece, currentPlayer, humanTurn, isSelected, legalMove, onClick }: SquareProps) {
+export function Square({ position, piece, currentPlayer, humanTurn, isSelected, legalMove, labelMode, onClick }: SquareProps) {
   const label = coordinateLabel(position);
   const tooltip = legalMove?.classification
     ? `${classificationTitle(legalMove.classification.kind)}${
@@ -45,7 +47,9 @@ export function Square({ position, piece, currentPlayer, humanTurn, isSelected, 
     >
       <span className="coord">{label}</span>
       {legalMove ? <span className="move-dot" aria-hidden="true" /> : null}
-      {piece ? <Piece currentPlayer={currentPlayer} humanTurn={humanTurn} isSelected={isSelected} piece={piece} /> : null}
+      {piece ? (
+        <Piece currentPlayer={currentPlayer} humanTurn={humanTurn} isSelected={isSelected} labelMode={labelMode} piece={piece} />
+      ) : null}
     </button>
   );
 }

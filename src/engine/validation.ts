@@ -1,6 +1,6 @@
 import { createEmptyBoard, getPiecePosition, isFrontierLine, isFrontierZone, setPieceAt } from "./board";
 import { shouldCannonCaptureUseCombat, shouldTriggerCombat, resolveCombat } from "./combat";
-import { getCombatProfileForPiece, getPieceAbbreviation } from "./data/classProfiles";
+import { getCombatProfileForPiece, getPieceAbbreviation, getPieceDisplayLabel } from "./data/classProfiles";
 import { applyMove, createInitialGameState } from "./gameState";
 import { countInterveningPieces, getLegalMove, getLegalMovesForPiece } from "./movement";
 import { classifyMove } from "./movement";
@@ -14,6 +14,11 @@ import { runBalanceSimulation } from "./simulation/balanceSimulator";
 import { getNextSwitchedMode, isAITurn, isHumanTurn } from "./ai/aiTurn";
 import { annotateLastMove, createGameSnapshot } from "./history";
 import { createReplaySnapshots } from "./replay";
+import {
+  deserializeGameStateFromFirestore,
+  hasNestedArray,
+  serializeGameStateForFirestore,
+} from "./online/firestoreSerialization";
 import { GameState, LegalMove, Piece, Position } from "./types";
 
 type ValidationResult = {
@@ -72,6 +77,9 @@ export function runRuleValidation(): ValidationResult {
     ["Combat uses Frontier profiles when piece.promoted is true", validatesCombatUsesFrontierProfiles],
     ["Board display abbreviations are K/R/N/B/C/G/P", validatesPieceAbbreviations],
     ["Promoted Pawn and Guard display as P★ and G★", validatesPromotedAbbreviations],
+    ["Traditional Chinese labels are 王/車/馬/相/炮/士/兵", validatesTraditionalChineseLabels],
+    ["Traditional Chinese promoted Pawn and Guard display as 兵★ and 士★", validatesTraditionalChinesePromotedLabels],
+    ["Changing piece label mode does not affect legal moves", validatesLabelModeDoesNotAffectLegalMoves],
     ["Random AI never selects illegal moves", validatesRandomAiLegalMoves],
     ["Simulation stops when a King is captured", validatesSimulationKingCaptureStop],
     ["Simulation stops at max turn limit", validatesSimulationMaxTurns],
@@ -122,6 +130,13 @@ export function runRuleValidation(): ValidationResult {
     ["Replay snapshots expose start, previous and next positions", validatesReplaySnapshots],
     ["AI turn helper does not allow AI movement during replay-equivalent paused state", validatesReplayBlocksAITurn],
     ["Game-over state is restorable through snapshots", validatesGameOverSnapshotRestore],
+    ["Online serialized game state contains no nested arrays", validatesOnlineSerializationHasNoNestedArrays],
+    ["Online serialized board reconstructs correctly", validatesOnlineSerializationRebuildsBoard],
+    ["Online serialization preserves starting Blue and Red piece squares", validatesOnlineSerializationStartingSquares],
+    ["Online serialization preserves promoted status", validatesOnlineSerializationPromotion],
+    ["Online serialization preserves Cannon screen move history", validatesOnlineSerializationCannonScreenHistory],
+    ["Online serialization preserves combat move history", validatesOnlineSerializationCombatHistory],
+    ["Online deserialized state still validates legal moves", validatesOnlineDeserializedLegalMoves],
   ];
 
   const messages = checks.map(([name, run]) => `${run() ? "PASS" : "FAIL"}: ${name}`);
@@ -548,6 +563,41 @@ function validatesPromotedAbbreviations(): boolean {
     getPieceAbbreviation({ id: "king", side: "Blue", type: "King", promoted: true }) === "K";
 }
 
+function validatesTraditionalChineseLabels(): boolean {
+  const expected: Array<[Piece["type"], string]> = [
+    ["King", "王"],
+    ["Rook", "車"],
+    ["Knight", "馬"],
+    ["Bishop", "相"],
+    ["Cannon", "炮"],
+    ["Guard", "士"],
+    ["Pawn", "兵"],
+  ];
+
+  return expected.every(([type, label]) =>
+    getPieceDisplayLabel({ id: type, side: "Blue", type }, "traditionalChinese") === label,
+  );
+}
+
+function validatesTraditionalChinesePromotedLabels(): boolean {
+  return getPieceDisplayLabel({ id: "pawn", side: "Blue", type: "Pawn", promoted: true }, "traditionalChinese") === "兵★" &&
+    getPieceDisplayLabel({ id: "guard", side: "Red", type: "Guard", promoted: true }, "traditionalChinese") === "士★" &&
+    getPieceDisplayLabel({ id: "king", side: "Blue", type: "King", promoted: true }, "traditionalChinese") === "王";
+}
+
+function validatesLabelModeDoesNotAffectLegalMoves(): boolean {
+  const state = createInitialGameState();
+  const piece = pieceAt(state, { col: 2, row: 1 });
+  if (!piece) {
+    return false;
+  }
+  const before = getLegalMovesForPiece(state, piece.id).map((move) => coordinateKey(move.to)).sort().join("|");
+  getPieceDisplayLabel(piece, "english");
+  getPieceDisplayLabel(piece, "traditionalChinese");
+  const after = getLegalMovesForPiece(state, piece.id).map((move) => coordinateKey(move.to)).sort().join("|");
+  return before === after;
+}
+
 function validatesRandomAiLegalMoves(): boolean {
   const state = createInitialGameState();
   return getAllLegalMovesForSide(state, "Blue").every(({ pieceId, move }) => classifyMove(state, pieceId, move.to).legal);
@@ -956,6 +1006,72 @@ function validatesGameOverSnapshotRestore(): boolean {
   return result.finalState.winner === "Blue" && snapshot.state.winner === undefined;
 }
 
+function validatesOnlineSerializationHasNoNestedArrays(): boolean {
+  return !hasNestedArray(serializeGameStateForFirestore(createInitialGameState()));
+}
+
+function validatesOnlineSerializationRebuildsBoard(): boolean {
+  const state = createInitialGameState();
+  const restored = deserializeGameStateFromFirestore(serializeGameStateForFirestore(state));
+  return JSON.stringify(restored.board) === JSON.stringify(state.board) &&
+    Object.keys(restored.pieces).length === Object.keys(state.pieces).length;
+}
+
+function validatesOnlineSerializationStartingSquares(): boolean {
+  const restored = deserializeGameStateFromFirestore(serializeGameStateForFirestore(createInitialGameState()));
+  return pieceAt(restored, { col: 2, row: 1 })?.type === "Cannon" &&
+    pieceAt(restored, { col: 4, row: 1 })?.type === "Bishop" &&
+    pieceAt(restored, { col: 2, row: 7 })?.type === "Bishop" &&
+    pieceAt(restored, { col: 4, row: 7 })?.type === "Cannon";
+}
+
+function validatesOnlineSerializationPromotion(): boolean {
+  const state = customState([bluePiece("pawn", "Pawn", { col: 3, row: 4 })]);
+  const move = getLegalMove(state, "pawn", { col: 3, row: 5 });
+  if (!move) return false;
+  const promoted = applyMove(state, "pawn", move);
+  const restored = deserializeGameStateFromFirestore(serializeGameStateForFirestore(promoted));
+  return restored.pieces.pawn.promoted === true;
+}
+
+function validatesOnlineSerializationCannonScreenHistory(): boolean {
+  const state = customState([
+    blueCannon({ col: 2, row: 1 }),
+    bluePiece("screen", "Pawn", { col: 2, row: 2 }),
+    redPiece("target", { col: 2, row: 5 }),
+  ]);
+  const move = getLegalMove(state, "cannon", { col: 2, row: 5 });
+  if (!move) return false;
+  const captured = applyMove(state, "cannon", move);
+  const serialized = serializeGameStateForFirestore(captured);
+  const restored = deserializeGameStateFromFirestore(serialized);
+  return serialized.moveHistory[0]?.cannonScreenSquares?.[0] === "C2" &&
+    restored.moveHistory[0]?.cannon?.screenSquares.some((square) => same(square, { col: 2, row: 2 })) === true;
+}
+
+function validatesOnlineSerializationCombatHistory(): boolean {
+  const state = {
+    ...customState([
+      bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+      redPiece("defender", { col: 4, row: 5 }),
+    ]),
+    forcedDice: { attackerValue: 6, defenderValue: 1 },
+  };
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) return false;
+  const combat = applyMove(state, "attacker", move);
+  const restored = deserializeGameStateFromFirestore(serializeGameStateForFirestore(combat));
+  return restored.moveHistory[0]?.combat?.attackerValue === 6 &&
+    restored.moveHistory[0]?.combat?.defenderValue === 1 &&
+    restored.moveHistory[0]?.combat?.attackerWon === true;
+}
+
+function validatesOnlineDeserializedLegalMoves(): boolean {
+  const restored = deserializeGameStateFromFirestore(serializeGameStateForFirestore(createInitialGameState()));
+  const cannon = pieceAt(restored, { col: 2, row: 1 });
+  return Boolean(cannon && getLegalMovesForPiece(restored, cannon.id).length > 0);
+}
+
 function customState(entries: Array<Piece & { position: Position }>, turn: "Blue" | "Red" = "Blue"): GameState {
   let board = createEmptyBoard();
   const pieces: Record<string, Piece> = {};
@@ -986,6 +1102,10 @@ function pieceAt(state: GameState, position: Position): Piece | undefined {
 
 function same(a: Position, b: Position): boolean {
   return a.col === b.col && a.row === b.row;
+}
+
+function coordinateKey(position: Position): string {
+  return `${position.col}-${position.row}`;
 }
 
 function hasLegalCapture(state: GameState, pieceId: string, to: Position): boolean {

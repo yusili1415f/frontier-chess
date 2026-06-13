@@ -1,12 +1,13 @@
 import { coordinateLabel } from "../../engine/board";
-import { getCombatProfileForPiece, getCombatProfileNameForPiece, getPieceAbbreviation } from "../../engine/data/classProfiles";
+import { getCombatProfileForPiece, getCombatProfileNameForPiece, getPieceDisplayLabel, PieceLabelMode } from "../../engine/data/classProfiles";
 import { GameState } from "../../engine/types";
 
 type CombatResultPanelProps = {
   state: GameState;
+  labelMode: PieceLabelMode;
 };
 
-export function CombatResultPanel({ state }: CombatResultPanelProps) {
+export function CombatResultPanel({ state, labelMode }: CombatResultPanelProps) {
   const record = state.lastMove;
 
   return (
@@ -17,8 +18,8 @@ export function CombatResultPanel({ state }: CombatResultPanelProps) {
       ) : record.combat && record.defender && record.removedPiece ? (
         <div className="combat-result">
           <strong>
-            {record.attacker.side} {record.attacker.type} ({getPieceAbbreviation(record.attacker)}) attacks{" "}
-            {record.defender.side} {record.defender.type} ({getPieceAbbreviation(record.defender)}) at{" "}
+            {record.attacker.side} {record.attacker.type} ({getPieceDisplayLabel(record.attacker, labelMode)}) attacks{" "}
+            {record.defender.side} {record.defender.type} ({getPieceDisplayLabel(record.defender, labelMode)}) at{" "}
             {coordinateLabel(record.move.to)}
           </strong>
           <span>

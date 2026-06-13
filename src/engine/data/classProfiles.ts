@@ -2,6 +2,8 @@ import { CombatProfile, Piece, PieceType } from "../types";
 
 export const PIECE_TYPES: PieceType[] = ["King", "Rook", "Knight", "Bishop", "Cannon", "Guard", "Pawn"];
 
+export type PieceLabelMode = "english" | "traditionalChinese";
+
 export const PIECE_ABBREVIATIONS: Record<PieceType, string> = {
   King: "K",
   Rook: "R",
@@ -12,9 +14,25 @@ export const PIECE_ABBREVIATIONS: Record<PieceType, string> = {
   Pawn: "P",
 };
 
+export const TRADITIONAL_CHINESE_PIECE_LABELS: Record<PieceType, string> = {
+  King: "王",
+  Rook: "車",
+  Knight: "馬",
+  Bishop: "相",
+  Cannon: "炮",
+  Guard: "士",
+  Pawn: "兵",
+};
+
 export function getPieceAbbreviation(piece: Piece): string {
+  return getPieceDisplayLabel(piece, "english");
+}
+
+export function getPieceDisplayLabel(piece: Piece, mode: PieceLabelMode): string {
+  const labels = mode === "traditionalChinese" ? TRADITIONAL_CHINESE_PIECE_LABELS : PIECE_ABBREVIATIONS;
+  const base = labels[piece.type];
   const promotedMarker = piece.promoted && (piece.type === "Pawn" || piece.type === "Guard") ? "★" : "";
-  return `${PIECE_ABBREVIATIONS[piece.type]}${promotedMarker}`;
+  return `${base}${promotedMarker}`;
 }
 
 export const CLASS_COMBAT_PROFILES: Record<PieceType, CombatProfile> = {

@@ -1,4 +1,5 @@
 import { getPiecePosition, samePosition } from "../engine/board";
+import { PieceLabelMode } from "../engine/data/classProfiles";
 import { GameState, LegalMove, Position } from "../engine/types";
 import { Square } from "./Square";
 
@@ -7,9 +8,10 @@ type BoardProps = {
   legalMoves: LegalMove[];
   onSquareClick: (position: Position) => void;
   humanTurn?: boolean;
+  labelMode: PieceLabelMode;
 };
 
-export function Board({ state, legalMoves, onSquareClick, humanTurn = true }: BoardProps) {
+export function Board({ state, legalMoves, onSquareClick, humanTurn = true, labelMode }: BoardProps) {
   const selectedPosition = state.selectedPieceId ? getPiecePosition(state.board, state.selectedPieceId) : undefined;
   const displayRanks = [...state.board].reverse();
   const files = ["A", "B", "C", "D", "E", "F", "G"];
@@ -40,6 +42,7 @@ export function Board({ state, legalMoves, onSquareClick, humanTurn = true }: Bo
                   humanTurn={humanTurn}
                   isSelected={isSelected}
                   key={`${square.position.col}-${square.position.row}`}
+                  labelMode={labelMode}
                   legalMove={legalMove}
                   onClick={onSquareClick}
                   piece={piece}

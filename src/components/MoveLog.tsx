@@ -1,12 +1,13 @@
 import { coordinateLabel } from "../engine/board";
-import { getCombatProfileNameForPiece } from "../engine/data/classProfiles";
+import { getCombatProfileNameForPiece, getPieceDisplayLabel, PieceLabelMode } from "../engine/data/classProfiles";
 import { MoveRecord } from "../engine/types";
 
 type MoveLogProps = {
   history: MoveRecord[];
+  labelMode: PieceLabelMode;
 };
 
-export function MoveLog({ history }: MoveLogProps) {
+export function MoveLog({ history, labelMode }: MoveLogProps) {
   return (
     <section className="panel-block log-block">
       <h2>Move Log</h2>
@@ -20,7 +21,7 @@ export function MoveLog({ history }: MoveLogProps) {
                 <strong>Turn {record.turnNumber} · {record.actor ?? "Unknown"} {record.player}</strong>
                 <span className={`log-badge ${actionType(record).toLowerCase().replace(" ", "-")}`}>{actionType(record)}</span>
               </div>
-              <span>{describeRecord(record)}</span>
+              <span>{describeRecord(record, labelMode)}</span>
               <small>
                 ID: {record.attacker.id} · {coordinateLabel(record.move.from)} → {coordinateLabel(record.move.to)}
                 {record.defender ? ` · Captured/target: ${record.defender.side} ${record.defender.type} (${record.defender.id})` : ""}
@@ -51,11 +52,11 @@ function actionType(record: MoveRecord): string {
   return "Move";
 }
 
-function describeRecord(record: MoveRecord): string {
+function describeRecord(record: MoveRecord, labelMode: PieceLabelMode): string {
   if (record.combat && record.defender && record.removedPiece) {
     const forced = record.combat.forcedDice ? " Forced dice debug mode." : "";
     const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
-    return `${getCombatProfileNameForPiece(record.attacker)} ${coordinateLabel(record.move.from)} attacks ${record.defender.side} ${getCombatProfileNameForPiece(record.defender)} ${coordinateLabel(record.move.to)}. Combat: ${getCombatProfileNameForPiece(record.attacker)} rolls ${record.combat.attackerValue}, ${getCombatProfileNameForPiece(record.defender)} rolls ${record.combat.defenderValue}. Attacker wins ties.${forced} ${record.combat.attackerWon ? "Attacker wins" : "Defender wins"}. ${record.removedPiece.side} ${record.removedPiece.type} removed.${promotion}`;
+    return `${getCombatProfileNameForPiece(record.attacker)} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} attacks ${record.defender.side} ${getCombatProfileNameForPiece(record.defender)} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)}. Combat: ${getCombatProfileNameForPiece(record.attacker)} rolls ${record.combat.attackerValue}, ${getCombatProfileNameForPiece(record.defender)} rolls ${record.combat.defenderValue}. Attacker wins ties.${forced} ${record.combat.attackerWon ? "Attacker wins" : "Defender wins"}. ${record.removedPiece.side} ${record.removedPiece.type} removed.${promotion}`;
   }
 
   if (record.defender) {
@@ -65,9 +66,9 @@ function describeRecord(record: MoveRecord): string {
     const home = record.cannon?.startsInHomeTerritory ? " from home territory" : "";
     const noCombat = record.cannon?.startsInHomeTerritory ? " No combat because Cannon launched from home territory." : "";
     const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
-    return `${record.attacker.type} ${coordinateLabel(record.move.from)} captures ${record.defender.side} ${record.defender.type} ${coordinateLabel(record.move.to)} directly${home}.${screen}${noCombat}${promotion}`;
+    return `${record.attacker.type} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} captures ${record.defender.side} ${record.defender.type} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)} directly${home}.${screen}${noCombat}${promotion}`;
   }
 
   const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
-  return `${record.attacker.type} ${coordinateLabel(record.move.from)} -> ${coordinateLabel(record.move.to)}.${promotion}`;
+  return `${record.attacker.type} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} -> ${coordinateLabel(record.move.to)}.${promotion}`;
 }

@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { OnlineGameDocument, OnlinePlayerRole } from "../../engine/online/onlineTypes";
+import { OnlineGameViewDocument, OnlinePlayerRole } from "../../engine/online/onlineTypes";
 import { isOnlineConfigured } from "../../services/onlineGameService";
 
 type OnlineGamePanelProps = {
   gameId?: string;
   role?: OnlinePlayerRole;
-  game?: OnlineGameDocument;
+  game?: OnlineGameViewDocument;
   error?: string;
   busy: boolean;
   onCreateGame: () => void;

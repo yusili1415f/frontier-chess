@@ -1,12 +1,13 @@
 import { coordinateLabel } from "../../engine/board";
-import { getPieceAbbreviation } from "../../engine/data/classProfiles";
+import { getPieceDisplayLabel, PieceLabelMode } from "../../engine/data/classProfiles";
 import { AIMoveExplanation } from "../../engine/history";
 
 type AIMoveExplanationPanelProps = {
   explanation?: AIMoveExplanation;
+  labelMode: PieceLabelMode;
 };
 
-export function AIMoveExplanationPanel({ explanation }: AIMoveExplanationPanelProps) {
+export function AIMoveExplanationPanel({ explanation, labelMode }: AIMoveExplanationPanelProps) {
   if (!explanation) {
     return (
       <section className="panel-block ai-explanation-panel">
@@ -27,7 +28,7 @@ export function AIMoveExplanationPanel({ explanation }: AIMoveExplanationPanelPr
         </strong>
       </p>
       <p className="muted-copy">
-        Board label: {getPieceAbbreviation(explanation.piece)} · {action}
+        Board label: {getPieceDisplayLabel(explanation.piece, labelMode)} · {action}
       </p>
       <p className="muted-copy">Score: {explanation.score.total.toFixed(2)}</p>
       <ol>
