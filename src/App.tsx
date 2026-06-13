@@ -9,6 +9,7 @@ import { CombatResultPanel } from "./components/panels/CombatResultPanel";
 import { GameControlsPanel } from "./components/panels/GameControlsPanel";
 import { GameInfoPanel } from "./components/panels/GameInfoPanel";
 import { GameStatusPanel } from "./components/panels/GameStatusPanel";
+import { OnlineGamePanel } from "./components/panels/OnlineGamePanel";
 import { PlayModePanel } from "./components/panels/PlayModePanel";
 import { ReplayPanel } from "./components/panels/ReplayPanel";
 import { RulesReferencePanel } from "./components/panels/RulesReferencePanel";
@@ -25,6 +26,15 @@ import { runBatchRandomSimulations, runRandomSimulation, stepRandomMove } from "
 import { BatchSimulationSummary, ScoredMoveChoice, SimulationResult } from "./engine/simulation/simulationTypes";
 import { ForcedDice, GameState, Position } from "./engine/types";
 import { runRuleValidation } from "./engine/validation";
+import {
+  createOnlineGame,
+  getOrCreatePlayerId,
+  joinOnlineGame,
+  normalizeGameId,
+  submitOnlineMove,
+  subscribeToOnlineGame,
+} from "./services/onlineGameService";
+import { OnlineGameDocument, OnlinePlayerRole } from "./engine/online/onlineTypes";
 
 export function App() {
   const [state, setState] = useState(createInitialGameState);
@@ -46,16 +56,33 @@ export function App() {
   const [batchSummary, setBatchSummary] = useState<BatchSimulationSummary | undefined>();
   const [aiMode, setAiMode] = useState<AiMode>("random");
   const [lastHeuristicChoice, setLastHeuristicChoice] = useState<ScoredMoveChoice | undefined>();
+  const [onlineGameId, setOnlineGameId] = useState<string | undefined>();
+  const [onlinePlayerId, setOnlinePlayerId] = useState<string | undefined>();
+  const [onlineRole, setOnlineRole] = useState<OnlinePlayerRole | undefined>();
+  const [onlineGame, setOnlineGame] = useState<OnlineGameDocument | undefined>();
+  const [onlineBusy, setOnlineBusy] = useState(false);
+  const [onlineError, setOnlineError] = useState<string | undefined>();
   const pendingAITurnKeyRef = useRef<string | undefined>();
+  const autoJoinAttemptedRef = useRef(false);
   const validation = useMemo(() => runRuleValidation(), []);
   const replaySnapshots = useMemo(() => createReplaySnapshots(initialSnapshot, historyEntries), [historyEntries, initialSnapshot]);
   const replaySnapshot = replay.active ? getReplaySnapshot(replay, initialSnapshot, historyEntries) : undefined;
   const displayState = replaySnapshot?.state ?? state;
   const displayAIExplanation = replaySnapshot?.aiExplanation ?? aiMoveExplanation;
   const displayPlayOutcome = replaySnapshot?.playOutcome ?? playOutcome;
+  const onlineActive = Boolean(onlineGameId && onlineRole && onlineGame);
   const reachedMaxTurns = !state.winner && state.moveHistory.length >= aiPlayOptions.maxTurns;
   const displayReachedMaxTurns = !displayState.winner && displayState.moveHistory.length >= aiPlayOptions.maxTurns;
-  const humanTurn = !replay.active && isHumanTurn(state, gameMode) && !reachedMaxTurns && !playOutcome;
+  const onlineCanMove = onlineActive &&
+    onlineGame?.status === "active" &&
+    onlineRole !== "Spectator" &&
+    onlineRole === state.turn &&
+    !state.winner;
+  const humanTurn = !replay.active && (
+    onlineActive
+      ? onlineCanMove
+      : isHumanTurn(state, gameMode) && !reachedMaxTurns && !playOutcome
+  );
   const legalMoves = useMemo(() => (humanTurn ? getSelectedLegalMoves(state) : []), [humanTurn, state]);
   const selectedPiece = displayState.selectedPieceId ? displayState.pieces[displayState.selectedPieceId] : undefined;
   const resultText = getPlayResultText(displayState.winner, displayReachedMaxTurns, displayPlayOutcome);
@@ -68,7 +95,7 @@ export function App() {
   }, [validation]);
 
   useEffect(() => {
-    if (replay.active || !isAITurn(state, gameMode) || state.winner || reachedMaxTurns || playOutcome) {
+    if (onlineActive || replay.active || !isAITurn(state, gameMode) || state.winner || reachedMaxTurns || playOutcome) {
       if (aiStatus === "thinking") {
         setAIStatus("idle");
       }
@@ -92,7 +119,43 @@ export function App() {
         pendingAITurnKeyRef.current = undefined;
       }
     };
-  }, [aiPlayOptions.aiMoveDelayMs, aiPlayOptions.heuristicRandomness, aiPlayOptions.topN, aiStatus, gameMode, playOutcome, reachedMaxTurns, replay.active, state]);
+  }, [aiPlayOptions.aiMoveDelayMs, aiPlayOptions.heuristicRandomness, aiPlayOptions.topN, aiStatus, gameMode, onlineActive, playOutcome, reachedMaxTurns, replay.active, state]);
+
+  useEffect(() => {
+    if (!onlineGameId) {
+      setOnlineGame(undefined);
+      return;
+    }
+
+    return subscribeToOnlineGame(
+      onlineGameId,
+      (game) => {
+        setOnlineGame(game ?? undefined);
+        if (game) {
+          cancelPendingAI();
+          setState(game.gameState);
+          setInitialSnapshot(createGameSnapshot(game.gameState));
+          setHistoryEntries([]);
+          setReplay({ active: false, index: game.moveHistory.length });
+          setAIMoveExplanation(undefined);
+          setPlayOutcome(game.reason ? formatOnlineReason(game.reason) : undefined);
+        }
+      },
+      (error) => setOnlineError(error.message),
+    );
+  }, [onlineGameId]);
+
+  useEffect(() => {
+    if (autoJoinAttemptedRef.current) {
+      return;
+    }
+    autoJoinAttemptedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const gameId = params.get("game");
+    if (gameId) {
+      handleJoinOnlineGame(gameId);
+    }
+  }, []);
 
   function handleSquareClick(position: Position) {
     if (!humanTurn) {
@@ -100,6 +163,18 @@ export function App() {
     }
 
     const clickedPiece = pieceAt(state, position);
+    if (onlineActive) {
+      if (clickedPiece?.side === state.turn && clickedPiece.side === onlineRole) {
+        setState((current) => selectPiece(current, clickedPiece.id));
+        return;
+      }
+
+      if (state.selectedPieceId) {
+        submitSelectedOnlineMove(position);
+      }
+      return;
+    }
+
     if (clickedPiece?.side === state.turn) {
       setState((current) => selectPiece(current, clickedPiece.id));
       return;
@@ -195,14 +270,23 @@ export function App() {
   }
 
   function handleResetGame() {
+    if (onlineActive) {
+      return;
+    }
     resetToState(createInitialGameState(), "standard");
   }
 
   function handleScenario(id: ScenarioId) {
+    if (onlineActive) {
+      return;
+    }
     resetToState(createScenario(id), id);
   }
 
   function handleResetCurrentScenario() {
+    if (onlineActive) {
+      return;
+    }
     resetToState(createScenario(currentScenarioId), currentScenarioId);
   }
 
@@ -211,6 +295,9 @@ export function App() {
   }
 
   function handleGameModeChange(nextMode: GameMode) {
+    if (onlineActive) {
+      return;
+    }
     cancelPendingAI();
     setGameMode(nextMode);
     setReplay({ active: false, index: historyEntries.length });
@@ -218,21 +305,33 @@ export function App() {
   }
 
   function handleSwitchSides() {
+    if (onlineActive) {
+      return;
+    }
     setGameMode((current) => getNextSwitchedMode(current));
     resetToState(createInitialGameState(), "standard");
   }
 
   function handleNewHumanVsAI() {
+    if (onlineActive) {
+      return;
+    }
     setGameMode("human-blue-vs-ai-red");
     resetToState(createInitialGameState(), "standard");
   }
 
   function handleNewHumanVsHuman() {
+    if (onlineActive) {
+      return;
+    }
     setGameMode("human-vs-human");
     resetToState(createInitialGameState(), "standard");
   }
 
   function handleLetAIMoveNow() {
+    if (onlineActive) {
+      return;
+    }
     if (replay.active || !isAITurn(state, gameMode) || state.winner || reachedMaxTurns || playOutcome) {
       return;
     }
@@ -240,6 +339,9 @@ export function App() {
   }
 
   function handleUndo() {
+    if (onlineActive) {
+      return;
+    }
     if (!historyEntries.length) {
       return;
     }
@@ -256,11 +358,17 @@ export function App() {
   }
 
   function startReplayAt(index: number) {
+    if (onlineActive) {
+      return;
+    }
     cancelPendingAI();
     setReplay({ active: true, index: clampReplayIndex(index, replaySnapshots) });
   }
 
   function goToLatestReplay() {
+    if (onlineActive) {
+      return;
+    }
     cancelPendingAI();
     setReplay({ active: true, index: Math.max(0, replaySnapshots.length - 1) });
   }
@@ -270,6 +378,9 @@ export function App() {
   }
 
   function handleStepAiMove() {
+    if (onlineActive) {
+      return;
+    }
     setState((current) => {
       if (aiMode === "heuristic") {
         const choice = chooseHeuristicMove(current, current.turn);
@@ -282,6 +393,9 @@ export function App() {
   }
 
   function handleRunOneSimulation() {
+    if (onlineActive) {
+      return;
+    }
     const result =
       aiMode === "heuristic"
         ? runHeuristicSimulation(createInitialGameState(), { maxTurns: 200 })
@@ -293,6 +407,9 @@ export function App() {
   }
 
   function handleRunBatch(games: number) {
+    if (onlineActive) {
+      return;
+    }
     const summary =
       aiMode === "heuristic"
         ? runBatchHeuristicSimulations(games, { maxTurns: 200 })
@@ -303,6 +420,9 @@ export function App() {
   }
 
   function handleAutoPlay() {
+    if (onlineActive) {
+      return;
+    }
     const result =
       aiMode === "heuristic"
         ? runHeuristicSimulation(state, { maxTurns: 200 })
@@ -313,11 +433,82 @@ export function App() {
     setLastHeuristicChoice(undefined);
   }
 
+  async function handleCreateOnlineGame() {
+    setOnlineBusy(true);
+    setOnlineError(undefined);
+    try {
+      const playerId = getOrCreatePlayerId();
+      const gameId = await createOnlineGame(playerId);
+      setOnlinePlayerId(playerId);
+      setOnlineRole("Blue");
+      setOnlineGameId(gameId);
+      window.history.replaceState(null, "", `${window.location.pathname}?game=${gameId}`);
+    } catch (error) {
+      setOnlineError(error instanceof Error ? error.message : "Could not create online game.");
+    } finally {
+      setOnlineBusy(false);
+    }
+  }
+
+  async function handleJoinOnlineGame(gameId: string) {
+    const normalizedGameId = normalizeGameId(gameId);
+    setOnlineBusy(true);
+    setOnlineError(undefined);
+    try {
+      const playerId = getOrCreatePlayerId();
+      const role = await joinOnlineGame(normalizedGameId, playerId);
+      setOnlinePlayerId(playerId);
+      setOnlineRole(role);
+      setOnlineGameId(normalizedGameId);
+      window.history.replaceState(null, "", `${window.location.pathname}?game=${normalizedGameId}`);
+    } catch (error) {
+      setOnlineError(error instanceof Error ? error.message : "Could not join online game.");
+    } finally {
+      setOnlineBusy(false);
+    }
+  }
+
+  function handleLeaveOnlineGame() {
+    setOnlineGameId(undefined);
+    setOnlineRole(undefined);
+    setOnlineGame(undefined);
+    setOnlineError(undefined);
+    setOnlineBusy(false);
+    window.history.replaceState(null, "", window.location.pathname);
+    resetToState(createInitialGameState(), "standard");
+  }
+
+  async function submitSelectedOnlineMove(position: Position) {
+    if (!onlineGameId || !onlinePlayerId || !state.selectedPieceId) {
+      return;
+    }
+
+    setOnlineError(undefined);
+    try {
+      await submitOnlineMove(onlineGameId, onlinePlayerId, {
+        pieceId: state.selectedPieceId,
+        to: position,
+      });
+    } catch (error) {
+      setOnlineError(error instanceof Error ? error.message : "Could not submit online move.");
+    }
+  }
+
   return (
     <AppLayout
       left={
         <>
           <GameInfoPanel state={displayState} onReset={handleResetGame} />
+          <OnlineGamePanel
+            busy={onlineBusy}
+            error={onlineError}
+            game={onlineGame}
+            gameId={onlineGameId}
+            onCreateGame={handleCreateOnlineGame}
+            onJoinGame={handleJoinOnlineGame}
+            onLeaveGame={handleLeaveOnlineGame}
+            role={onlineRole}
+          />
           <GameStatusPanel
             aiStatus={aiStatus}
             gameMode={gameMode}
@@ -340,7 +531,7 @@ export function App() {
             state={displayState}
           />
           <GameControlsPanel
-            canUndo={historyEntries.length > 0}
+            canUndo={!onlineActive && historyEntries.length > 0}
             onNewHumanVsAI={handleNewHumanVsAI}
             onNewHumanVsHuman={handleNewHumanVsHuman}
             onResetScenario={handleResetCurrentScenario}
@@ -370,6 +561,10 @@ export function App() {
       }
       center={
         <section className="game-area">
+          <div className="mobile-status-bar">
+            <span>{displayState.winner ? `${displayState.winner} wins` : `${displayState.turn} to move`}</span>
+            <span>{onlineGameId ? `Online ${onlineRole ?? ""}` : gameMode.split("-").join(" ")}</span>
+          </div>
           <header className="topbar">
             <div>
               <p className="eyebrow">Frontier Chess</p>
@@ -378,7 +573,9 @@ export function App() {
           </header>
 
           {replay.active ? <div className="replay-banner">Replay Mode - normal play is paused</div> : null}
-          <Board humanTurn={humanTurn} legalMoves={legalMoves} onSquareClick={handleSquareClick} state={displayState} />
+          <div className="board-zone">
+            <Board humanTurn={humanTurn} legalMoves={legalMoves} onSquareClick={handleSquareClick} state={displayState} />
+          </div>
 
           <div className="territory-key" aria-label="Board territory key">
             <span>Rows 1-2: Blue home</span>
@@ -435,4 +632,15 @@ function getPlayResultText(winner: "Blue" | "Red" | undefined, reachedMaxTurns: 
     return "Draw / max turns reached";
   }
   return playOutcome ?? "In progress";
+}
+
+function formatOnlineReason(reason: NonNullable<OnlineGameDocument["reason"]>): string {
+  switch (reason) {
+    case "kingCaptured":
+      return "King captured";
+    case "maxTurns":
+      return "Draw / max turns reached";
+    case "noLegalMoves":
+      return "Draw / no legal moves";
+  }
 }
