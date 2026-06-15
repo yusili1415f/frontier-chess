@@ -1363,7 +1363,8 @@ function validatesManualRollTimeoutAutoRoll(): boolean {
   return expired.attackerDieIndex === 0 &&
     expired.defenderDieIndex !== undefined &&
     expired.defenderAutoRolled === true &&
-    expired.status === "bothRolled";
+    expired.status === "revealingResult" &&
+    expired.resolveAfterAt !== undefined;
 }
 
 function validatesAutomaticCombatUnchanged(): boolean {

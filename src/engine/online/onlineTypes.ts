@@ -46,6 +46,11 @@ export type FirestorePendingCombat = {
   defenderProfileValue?: number | null;
   attackerAutoRolled?: boolean | null;
   defenderAutoRolled?: boolean | null;
+  resultRevealedAt?: number | null;
+  resolveAfterAt?: number | null;
+  winnerSide?: PlayerSide | null;
+  attackerWins?: boolean | null;
+  isTie?: boolean | null;
   startedAt: number;
   rollDeadlineAt: number;
   status: PendingCombat["status"];

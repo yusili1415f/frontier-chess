@@ -7,6 +7,8 @@ export type PieceType = "King" | "Rook" | "Knight" | "Bishop" | "Cannon" | "Guar
 
 export type CombatRollMode = "automatic" | "manual";
 
+export type MobileBoardLockMode = "locked" | "unlocked";
+
 export type Position = {
   col: number;
   row: number;
@@ -95,7 +97,7 @@ export type ForcedDice = {
 export type PendingCombatStatus =
   | "waitingForAttackerRoll"
   | "waitingForDefenderRoll"
-  | "bothRolled"
+  | "revealingResult"
   | "resolved";
 
 export interface PendingCombat {
@@ -117,6 +119,11 @@ export interface PendingCombat {
   defenderProfileValue?: number;
   attackerAutoRolled?: boolean;
   defenderAutoRolled?: boolean;
+  resultRevealedAt?: number;
+  resolveAfterAt?: number;
+  winnerSide?: PlayerSide;
+  attackerWins?: boolean;
+  isTie?: boolean;
   startedAt: number;
   rollDeadlineAt: number;
   status: PendingCombatStatus;

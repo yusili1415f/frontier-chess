@@ -3,7 +3,7 @@ import { getCombatProfileForPiece, getCombatProfileNameForPiece } from "./data/c
 import { GameState, LegalMove, PendingCombat, Piece, PlayerSide } from "./types";
 
 export const COMBAT_ROLL_TIMEOUT_MS = 15_000;
-export const COMBAT_RESOLVE_DELAY_MS = 900;
+export const COMBAT_RESULT_REVEAL_MS = 2_000;
 
 export function createPendingCombat(
   state: GameState,
@@ -63,7 +63,7 @@ export function rollPendingCombatSide(
 }
 
 export function autoRollExpiredPendingCombat(pendingCombat: PendingCombat, now = Date.now()): PendingCombat {
-  if (now < pendingCombat.rollDeadlineAt || pendingCombat.status === "bothRolled" || pendingCombat.status === "resolved") {
+  if (now < pendingCombat.rollDeadlineAt || pendingCombat.status === "revealingResult" || pendingCombat.status === "resolved") {
     return pendingCombat;
   }
 
@@ -105,7 +105,18 @@ export function canSideRollPendingCombat(pendingCombat: PendingCombat, side: Pla
 
 function withStatus(pendingCombat: PendingCombat): PendingCombat {
   if (pendingCombat.attackerDieIndex !== undefined && pendingCombat.defenderDieIndex !== undefined) {
-    return { ...pendingCombat, status: "bothRolled" };
+    const isTie = pendingCombat.attackerProfileValue === pendingCombat.defenderProfileValue;
+    const attackerWins = (pendingCombat.attackerProfileValue ?? 0) >= (pendingCombat.defenderProfileValue ?? 0);
+    const resultRevealedAt = Date.now();
+    return {
+      ...pendingCombat,
+      status: "revealingResult",
+      resultRevealedAt,
+      resolveAfterAt: resultRevealedAt + COMBAT_RESULT_REVEAL_MS,
+      winnerSide: attackerWins ? pendingCombat.attackerSide : pendingCombat.defenderSide,
+      attackerWins,
+      isTie,
+    };
   }
   if (pendingCombat.attackerDieIndex === undefined) {
     return { ...pendingCombat, status: "waitingForAttackerRoll" };

@@ -408,7 +408,7 @@ function createMatchResult(game: OnlineGameDocument): OnlineMatchResult {
 }
 
 function resolveOrStorePendingCombat(storedGame: OnlineGameDocument, pendingCombat: NonNullable<OnlineGameViewDocument["pendingCombat"]>): Partial<OnlineGameDocument> {
-  if (pendingCombat.status !== "bothRolled") {
+  if (pendingCombat.status !== "revealingResult" || Date.now() < (pendingCombat.resolveAfterAt ?? Number.POSITIVE_INFINITY)) {
     return {
       updatedAt: Date.now(),
       pendingCombat: serializePendingCombatForFirestore(pendingCombat),

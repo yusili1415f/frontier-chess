@@ -5,16 +5,24 @@ import { PendingCombat, PlayerSide } from "../../engine/types";
 type CombatRollPanelProps = {
   pendingCombat?: PendingCombat;
   currentRoller?: PlayerSide | "Both" | null;
+  resolveSecondsRemaining?: number;
   secondsRemaining: number;
   onRoll: (side: PlayerSide) => void;
 };
 
-export function CombatRollPanel({ pendingCombat, currentRoller = "Both", secondsRemaining, onRoll }: CombatRollPanelProps) {
+export function CombatRollPanel({
+  pendingCombat,
+  currentRoller = "Both",
+  resolveSecondsRemaining = 0,
+  secondsRemaining,
+  onRoll,
+}: CombatRollPanelProps) {
   if (!pendingCombat) {
     return null;
   }
 
   const winner = getPendingCombatWinner(pendingCombat);
+  const revealing = pendingCombat.status === "revealingResult";
   const canRollAttacker = canRoll(pendingCombat, pendingCombat.attackerSide, currentRoller);
   const canRollDefender = canRoll(pendingCombat, pendingCombat.defenderSide, currentRoller);
 
@@ -28,7 +36,7 @@ export function CombatRollPanel({ pendingCombat, currentRoller = "Both", seconds
             {pendingCombat.defenderProfileName} at {coordinateLabel(pendingCombat.targetSquare)}
           </h2>
         </div>
-        <strong>Auto-roll in {secondsRemaining}s</strong>
+        <strong>{revealing ? `Resolving in ${resolveSecondsRemaining}s` : `Auto-roll in ${secondsRemaining}s`}</strong>
       </div>
 
       <div className="combat-roll-grid">
@@ -42,6 +50,7 @@ export function CombatRollPanel({ pendingCombat, currentRoller = "Both", seconds
           profile={pendingCombat.attackerProfile}
           profileName={pendingCombat.attackerProfileName}
           profileValue={pendingCombat.attackerProfileValue}
+          revealing={revealing}
           side={pendingCombat.attackerSide}
         />
         <RollCard
@@ -53,17 +62,20 @@ export function CombatRollPanel({ pendingCombat, currentRoller = "Both", seconds
           profile={pendingCombat.defenderProfile}
           profileName={pendingCombat.defenderProfileName}
           profileValue={pendingCombat.defenderProfileValue}
+          revealing={revealing}
           side={pendingCombat.defenderSide}
         />
       </div>
 
-      {pendingCombat.status === "bothRolled" && winner ? (
+      {revealing && winner ? (
         <div className="combat-comparison">
+          <span>Both players rolled.</span>
           <strong>
             Final: {pendingCombat.attackerProfileValue} vs {pendingCombat.defenderProfileValue}
           </strong>
           {pendingCombat.attackerProfileValue === pendingCombat.defenderProfileValue ? <span>Tie: attacker wins.</span> : null}
-          <span>{winner} wins. Resolving...</span>
+          <span>{winner} wins.</span>
+          <span>Resolving in {resolveSecondsRemaining}s...</span>
         </div>
       ) : (
         <p className="combat-waiting">Waiting for dice rolls. Board play is paused until combat resolves.</p>
@@ -82,6 +94,7 @@ type RollCardProps = {
   profile: number[];
   profileName: string;
   profileValue?: number;
+  revealing: boolean;
   side: PlayerSide;
 };
 
@@ -95,6 +108,7 @@ function RollCard({
   profile,
   profileName,
   profileValue,
+  revealing,
   side,
 }: RollCardProps) {
   const rolled = dieIndex !== undefined;
@@ -108,8 +122,8 @@ function RollCard({
       <span>{rolled ? `Die roll: ${dieIndex + 1}` : "Die roll: waiting..."}</span>
       <span>{rolled ? `Profile value: ${profileValue}` : "Profile value: waiting..."}</span>
       {autoRolled ? <span className="auto-roll-note">Timed out. Auto-rolled.</span> : null}
-      <button disabled={!canRoll || rolled} onClick={onRoll} type="button">
-        {rolled ? "Rolled" : canRoll ? buttonLabel : "Waiting for opponent..."}
+      <button disabled={revealing || !canRoll || rolled} onClick={onRoll} type="button">
+        {revealing ? "Result revealed — resolving..." : rolled ? "Rolled" : canRoll ? buttonLabel : "Waiting for opponent..."}
       </button>
     </div>
   );
@@ -117,6 +131,9 @@ function RollCard({
 
 function canRoll(pendingCombat: PendingCombat, side: PlayerSide, currentRoller: PlayerSide | "Both" | null): boolean {
   if (currentRoller === null) {
+    return false;
+  }
+  if (pendingCombat.status === "revealingResult") {
     return false;
   }
   if (currentRoller !== "Both" && currentRoller !== side) {

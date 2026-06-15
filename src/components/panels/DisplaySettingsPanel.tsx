@@ -1,16 +1,20 @@
-import { CombatRollMode } from "../../engine/types";
+import { CombatRollMode, MobileBoardLockMode } from "../../engine/types";
 import { PieceLabelMode } from "../../engine/data/classProfiles";
 
 type DisplaySettingsPanelProps = {
   combatRollMode: CombatRollMode;
+  mobileBoardLockMode: MobileBoardLockMode;
   onCombatRollModeChange: (mode: CombatRollMode) => void;
+  onMobileBoardLockModeChange: (mode: MobileBoardLockMode) => void;
   pieceLabelMode: PieceLabelMode;
   onPieceLabelModeChange: (mode: PieceLabelMode) => void;
 };
 
 export function DisplaySettingsPanel({
   combatRollMode,
+  mobileBoardLockMode,
   onCombatRollModeChange,
+  onMobileBoardLockModeChange,
   pieceLabelMode,
   onPieceLabelModeChange,
 }: DisplaySettingsPanelProps) {
@@ -29,6 +33,13 @@ export function DisplaySettingsPanel({
         <select value={combatRollMode} onChange={(event) => onCombatRollModeChange(event.target.value as CombatRollMode)}>
           <option value="automatic">Automatic</option>
           <option value="manual">Manual Roll</option>
+        </select>
+      </label>
+      <label className="display-setting-field mobile-board-lock-setting">
+        Lock Board While Scrolling
+        <select value={mobileBoardLockMode} onChange={(event) => onMobileBoardLockModeChange(event.target.value as MobileBoardLockMode)}>
+          <option value="locked">On</option>
+          <option value="unlocked">Off</option>
         </select>
       </label>
     </section>

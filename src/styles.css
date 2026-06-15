@@ -71,6 +71,10 @@ button {
   display: none;
 }
 
+.mobile-board-lock-toggle {
+  display: none;
+}
+
 .board-zone {
   display: flex;
   justify-content: center;
@@ -1300,6 +1304,14 @@ h2 {
     background: #f3f0e8;
   }
 
+  .mobile-board-locked .game-area {
+    padding-top: calc(min(96vw, 68dvh, 560px) + 88px);
+  }
+
+  .mobile-board-unlocked .game-area {
+    padding-top: 0;
+  }
+
   .mobile-status-bar {
     display: flex;
     align-items: center;
@@ -1315,10 +1327,40 @@ h2 {
     text-transform: capitalize;
   }
 
+  .mobile-board-locked .mobile-status-bar {
+    position: fixed;
+    z-index: 31;
+    top: 0;
+    right: 0;
+    left: 0;
+    min-height: 44px;
+    padding: 8px 12px;
+    background: #f3f0e8;
+  }
+
+  .mobile-board-unlocked .mobile-status-bar {
+    position: static;
+  }
+
   .mobile-status-bar span {
     overflow: hidden;
     min-width: 0;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-board-lock-toggle {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 5px 8px;
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 0.7rem;
+    font-weight: 900;
     white-space: nowrap;
   }
 
@@ -1335,8 +1377,26 @@ h2 {
     padding: 0;
   }
 
+  .mobile-board-locked .board-zone {
+    position: fixed;
+    top: 44px;
+    right: 0;
+    left: 0;
+    z-index: 30;
+    border-bottom: 1px solid var(--line);
+    padding: 6px 10px 8px;
+    background: #f3f0e8;
+  }
+
+  .mobile-board-unlocked .board-zone {
+    position: relative;
+    z-index: auto;
+    border-bottom: 0;
+    padding: 0;
+  }
+
   .board-frame {
-    width: min(96vw, 560px);
+    width: min(96vw, 68dvh, 560px);
     max-width: 560px;
     flex: 0 0 auto;
   }
@@ -1475,6 +1535,10 @@ h2 {
 
   .game-info-panel {
     display: none;
+  }
+
+  .mobile-board-lock-setting {
+    display: grid;
   }
 
   .play-options,

@@ -28,14 +28,13 @@ import { createScenario, ScenarioId } from "./engine/scenarios";
 import { chooseHeuristicMove, runBatchHeuristicSimulations, runHeuristicSimulation } from "./engine/simulation/heuristicAI";
 import { runBatchRandomSimulations, runRandomSimulation, stepRandomMove } from "./engine/simulation/simulator";
 import { BatchSimulationSummary, ScoredMoveChoice, SimulationResult } from "./engine/simulation/simulationTypes";
-import { CombatRollMode, ForcedDice, GameState, LegalMove, PendingCombat, Position } from "./engine/types";
+import { CombatRollMode, ForcedDice, GameState, LegalMove, MobileBoardLockMode, PendingCombat, Position } from "./engine/types";
 import { PieceLabelMode } from "./engine/data/classProfiles";
 import { getKingThreats } from "./engine/kingThreat";
 import { deriveLastMoveHighlight } from "./engine/lastMoveHighlight";
 import {
   autoRollExpiredPendingCombat,
   canSideRollPendingCombat,
-  COMBAT_RESOLVE_DELAY_MS,
   createPendingCombat,
   pendingCombatToForcedDice,
   rollPendingCombatSide,
@@ -57,6 +56,7 @@ import { OnlineGameDocument, OnlineGameViewDocument, OnlinePlayerRole, OnlineRem
 
 const PIECE_LABEL_MODE_STORAGE_KEY = "frontierChessPieceLabelMode";
 const COMBAT_ROLL_MODE_STORAGE_KEY = "frontierChessCombatRollMode";
+const MOBILE_BOARD_LOCK_STORAGE_KEY = "frontierChessMobileBoardLock";
 
 type LocalPendingCombatContext = {
   actor: MoveActor;
@@ -72,6 +72,7 @@ export function App() {
   const [state, setState] = useState(createInitialGameState);
   const [pieceLabelMode, setPieceLabelMode] = useState<PieceLabelMode>(() => getStoredPieceLabelMode());
   const [combatRollMode, setCombatRollMode] = useState(() => getStoredCombatRollMode());
+  const [mobileBoardLockMode, setMobileBoardLockMode] = useState<MobileBoardLockMode>(() => getStoredMobileBoardLockMode());
   const [gameMode, setGameMode] = useState<GameMode>("human-blue-vs-ai-red");
   const [aiStatus, setAIStatus] = useState<AIStatus>("idle");
   const [aiPlayOptions, setAIPlayOptions] = useState<AIPlayOptions>({
@@ -143,6 +144,10 @@ export function App() {
   }, [combatRollMode]);
 
   useEffect(() => {
+    window.localStorage.setItem(MOBILE_BOARD_LOCK_STORAGE_KEY, mobileBoardLockMode);
+  }, [mobileBoardLockMode]);
+
+  useEffect(() => {
     if (onlineActive || pendingCombat || replay.active || !isAITurn(state, gameMode) || state.winner || reachedMaxTurns || playOutcome) {
       if (aiStatus === "thinking") {
         setAIStatus("idle");
@@ -195,7 +200,10 @@ export function App() {
       return;
     }
 
-    if (Date.now() < onlineGame.pendingCombat.rollDeadlineAt) {
+    if (
+      Date.now() < onlineGame.pendingCombat.rollDeadlineAt &&
+      (onlineGame.pendingCombat.status !== "revealingResult" || Date.now() < (onlineGame.pendingCombat.resolveAfterAt ?? 0))
+    ) {
       return;
     }
 
@@ -203,7 +211,7 @@ export function App() {
   }, [onlineActive, onlineGame?.pendingCombat, onlineGameId, pendingCombatNow]);
 
   useEffect(() => {
-    if (!pendingCombatContext || pendingCombatContext.pendingCombat.status !== "bothRolled") {
+    if (!pendingCombatContext || pendingCombatContext.pendingCombat.status !== "revealingResult") {
       return;
     }
 
@@ -212,7 +220,8 @@ export function App() {
     }
 
     pendingCombatResolveRef.current = pendingCombatContext.pendingCombat.combatId;
-    const timer = window.setTimeout(() => resolvePendingLocalCombat(), COMBAT_RESOLVE_DELAY_MS);
+    const delay = Math.max(0, (pendingCombatContext.pendingCombat.resolveAfterAt ?? Date.now()) - Date.now());
+    const timer = window.setTimeout(() => resolvePendingLocalCombat(), delay);
     return () => window.clearTimeout(timer);
   }, [pendingCombatContext]);
 
@@ -718,7 +727,7 @@ export function App() {
 
   function resolvePendingLocalCombat() {
     setPendingCombatContext((current) => {
-      if (!current || current.pendingCombat.status !== "bothRolled") {
+      if (!current || current.pendingCombat.status !== "revealingResult") {
         return current;
       }
 
@@ -763,12 +772,15 @@ export function App() {
 
   return (
     <AppLayout
+      className={mobileBoardLockMode === "locked" ? "mobile-board-locked" : "mobile-board-unlocked"}
       left={
         <>
           <GameInfoPanel state={displayState} onReset={handleResetGame} />
           <DisplaySettingsPanel
             combatRollMode={combatRollMode}
+            mobileBoardLockMode={mobileBoardLockMode}
             onCombatRollModeChange={setCombatRollMode}
+            onMobileBoardLockModeChange={setMobileBoardLockMode}
             pieceLabelMode={pieceLabelMode}
             onPieceLabelModeChange={setPieceLabelMode}
           />
@@ -840,6 +852,13 @@ export function App() {
           <div className="mobile-status-bar">
             <span>{displayState.winner ? `${displayState.winner} wins` : `${displayState.turn} to move`}</span>
             <span>{onlineGameId ? `Online ${onlineRole ?? ""}` : gameMode.split("-").join(" ")}</span>
+            <button
+              className="mobile-board-lock-toggle"
+              onClick={() => setMobileBoardLockMode((current) => current === "locked" ? "unlocked" : "locked")}
+              type="button"
+            >
+              Board {mobileBoardLockMode === "locked" ? "Locked" : "Unlocked"}
+            </button>
           </div>
           <header className="topbar">
             <div>
@@ -871,6 +890,7 @@ export function App() {
             currentRoller={getCurrentRoller(gameMode, onlineActive, onlineRole ?? null)}
             onRoll={rollPendingCombat}
             pendingCombat={pendingCombat}
+            resolveSecondsRemaining={Math.max(0, Math.ceil(((pendingCombat?.resolveAfterAt ?? 0) - pendingCombatNow) / 1000))}
             secondsRemaining={Math.max(0, Math.ceil(((pendingCombat?.rollDeadlineAt ?? 0) - pendingCombatNow) / 1000))}
           />
         </section>
@@ -953,6 +973,11 @@ function getStoredPieceLabelMode(): PieceLabelMode {
 function getStoredCombatRollMode(): CombatRollMode {
   const stored = window.localStorage.getItem(COMBAT_ROLL_MODE_STORAGE_KEY);
   return stored === "manual" ? "manual" : "automatic";
+}
+
+function getStoredMobileBoardLockMode(): MobileBoardLockMode {
+  const stored = window.localStorage.getItem(MOBILE_BOARD_LOCK_STORAGE_KEY);
+  return stored === "unlocked" ? "unlocked" : "locked";
 }
 
 function getCurrentRoller(
