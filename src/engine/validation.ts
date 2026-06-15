@@ -13,12 +13,22 @@ import { collectBalanceMetrics } from "./simulation/balanceMetrics";
 import { runBalanceSimulation } from "./simulation/balanceSimulator";
 import { getNextSwitchedMode, isAITurn, isHumanTurn } from "./ai/aiTurn";
 import { annotateLastMove, createGameSnapshot } from "./history";
+import { getCheckedSides, getKingThreats, isKingInCheck } from "./kingThreat";
+import { deriveLastMoveHighlight } from "./lastMoveHighlight";
+import {
+  autoRollExpiredPendingCombat,
+  createPendingCombat,
+  pendingCombatToForcedDice,
+  rollPendingCombatSide,
+} from "./pendingCombat";
 import { createReplaySnapshots } from "./replay";
 import {
   deserializeGameStateFromFirestore,
   hasNestedArray,
   serializeGameStateForFirestore,
 } from "./online/firestoreSerialization";
+import { OnlineGameDocument } from "./online/onlineTypes";
+import { startOnlineRematchIfBothAccepted } from "../services/onlineGameService";
 import { GameState, LegalMove, Piece, Position } from "./types";
 
 type ValidationResult = {
@@ -137,6 +147,26 @@ export function runRuleValidation(): ValidationResult {
     ["Online serialization preserves Cannon screen move history", validatesOnlineSerializationCannonScreenHistory],
     ["Online serialization preserves combat move history", validatesOnlineSerializationCombatHistory],
     ["Online deserialized state still validates legal moves", validatesOnlineDeserializedLegalMoves],
+    ["Online rematch waits for both players", validatesOnlineRematchWaitsForBothPlayers],
+    ["Online rematch starts next match in same room", validatesOnlineRematchStartsNextMatch],
+    ["Online rematch can swap player sides", validatesOnlineRematchCanSwapSides],
+    ["Last move highlight derives normal move", validatesLastMoveHighlightNormalMove],
+    ["Last move highlight derives direct capture and Cannon screen", validatesLastMoveHighlightDirectCapture],
+    ["Last move highlight derives attacker-won combat", validatesLastMoveHighlightAttackerWonCombat],
+    ["Last move highlight derives defender-won combat", validatesLastMoveHighlightDefenderWonCombat],
+    ["Last move highlight derives promotion", validatesLastMoveHighlightPromotion],
+    ["King with no threats is not in check", validatesKingNoThreats],
+    ["King with one legal attacker is in check", validatesKingOneThreat],
+    ["King with multiple legal attackers returns multiple threats", validatesKingMultipleThreats],
+    ["Cannon gives check with exactly 1 screen", validatesCannonCheckOneScreen],
+    ["Cannon does not give check with 0 screens", validatesCannonCheckZeroScreens],
+    ["Cannon does not give check with 2 or more screens", validatesCannonCheckTooManyScreens],
+    ["Frontier Zone combat attack still counts as check", validatesCombatCaptureCheck],
+    ["Move record marks checked side after a checking move", validatesMoveRecordCheckMarker],
+    ["Manual combat roll maps die face to profile value", validatesManualRollProfileMapping],
+    ["Manual combat roll preserves attacker-wins-ties", validatesManualRollAttackerWinsTies],
+    ["Manual combat timeout auto-rolls missing dice", validatesManualRollTimeoutAutoRoll],
+    ["Automatic combat mode still resolves without manual flag", validatesAutomaticCombatUnchanged],
   ];
 
   const messages = checks.map(([name, run]) => `${run() ? "PASS" : "FAIL"}: ${name}`);
@@ -1070,6 +1100,305 @@ function validatesOnlineDeserializedLegalMoves(): boolean {
   const restored = deserializeGameStateFromFirestore(serializeGameStateForFirestore(createInitialGameState()));
   const cannon = pieceAt(restored, { col: 2, row: 1 });
   return Boolean(cannon && getLegalMovesForPiece(restored, cannon.id).length > 0);
+}
+
+function validatesOnlineRematchWaitsForBothPlayers(): boolean {
+  const game = finishedOnlineGame({ requestedByBlue: true, requestedByRed: false });
+  const update = startOnlineRematchIfBothAccepted(game);
+  return update.status === undefined &&
+    update.rematch?.requestedByBlue === true &&
+    update.rematch?.requestedByRed === false;
+}
+
+function validatesOnlineRematchStartsNextMatch(): boolean {
+  const game = finishedOnlineGame({ requestedByBlue: true, requestedByRed: true });
+  const update = startOnlineRematchIfBothAccepted(game);
+  const restored = update.gameState ? deserializeGameStateFromFirestore(update.gameState) : undefined;
+  return update.status === "active" &&
+    update.currentPlayer === "Blue" &&
+    update.matchNumber === 2 &&
+    update.winner === null &&
+    update.reason === null &&
+    update.moveHistory?.length === 0 &&
+    update.previousResults?.length === 1 &&
+    update.bluePlayerId === "blue-player" &&
+    update.redPlayerId === "red-player" &&
+    restored?.turn === "Blue" &&
+    restored.moveHistory.length === 0 &&
+    pieceAt(restored, { col: 2, row: 1 })?.type === "Cannon";
+}
+
+function validatesOnlineRematchCanSwapSides(): boolean {
+  const game = finishedOnlineGame({ requestedByBlue: true, requestedByRed: true, sideMode: "swap" });
+  const update = startOnlineRematchIfBothAccepted(game);
+  return update.bluePlayerId === "red-player" &&
+    update.redPlayerId === "blue-player" &&
+    update.currentPlayer === "Blue";
+}
+
+function validatesLastMoveHighlightNormalMove(): boolean {
+  const state = createInitialGameState();
+  const pawn = pieceAt(state, { col: 0, row: 2 });
+  const move = pawn ? getLegalMove(state, pawn.id, { col: 0, row: 3 }) : undefined;
+  if (!pawn || !move) return false;
+  const next = applyMove(state, pawn.id, move);
+  const highlight = deriveLastMoveHighlight(next.lastMove);
+  return highlight.kind === "normalMove" &&
+    same(highlight.from!, { col: 0, row: 2 }) &&
+    same(highlight.to!, { col: 0, row: 3 }) &&
+    highlight.movedPieceId === pawn.id;
+}
+
+function validatesLastMoveHighlightDirectCapture(): boolean {
+  const state = customState([
+    blueCannon({ col: 2, row: 1 }),
+    bluePiece("screen", "Pawn", { col: 2, row: 2 }),
+    redPiece("target", { col: 2, row: 5 }),
+  ]);
+  const move = getLegalMove(state, "cannon", { col: 2, row: 5 });
+  if (!move) return false;
+  const next = applyMove(state, "cannon", move);
+  const highlight = deriveLastMoveHighlight(next.lastMove);
+  return highlight.kind === "directCapture" &&
+    same(highlight.from!, { col: 2, row: 1 }) &&
+    same(highlight.to!, { col: 2, row: 5 }) &&
+    highlight.cannonScreenSquares.some((square) => same(square, { col: 2, row: 2 }));
+}
+
+function validatesLastMoveHighlightAttackerWonCombat(): boolean {
+  const state = {
+    ...customState([
+      bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+      redPiece("defender", { col: 4, row: 5 }),
+    ]),
+    forcedDice: { attackerValue: 6, defenderValue: 1 },
+  };
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) return false;
+  const next = applyMove(state, "attacker", move);
+  const highlight = deriveLastMoveHighlight(next.lastMove);
+  return highlight.kind === "combatAttackerWon" &&
+    same(highlight.from!, { col: 3, row: 3 }) &&
+    same(highlight.finalPieceSquare!, { col: 4, row: 5 });
+}
+
+function validatesLastMoveHighlightDefenderWonCombat(): boolean {
+  const state = {
+    ...customState([
+      bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+      redPiece("defender", { col: 4, row: 5 }),
+    ]),
+    forcedDice: { attackerValue: 1, defenderValue: 6 },
+  };
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) return false;
+  const next = applyMove(state, "attacker", move);
+  const highlight = deriveLastMoveHighlight(next.lastMove);
+  return highlight.kind === "combatDefenderWon" &&
+    same(highlight.from!, { col: 3, row: 3 }) &&
+    same(highlight.finalPieceSquare!, { col: 4, row: 5 }) &&
+    highlight.summary.includes("held the square");
+}
+
+function validatesLastMoveHighlightPromotion(): boolean {
+  const state = customState([bluePiece("pawn", "Pawn", { col: 3, row: 4 })]);
+  const move = getLegalMove(state, "pawn", { col: 3, row: 5 });
+  if (!move) return false;
+  const next = applyMove(state, "pawn", move);
+  const highlight = deriveLastMoveHighlight(next.lastMove);
+  return highlight.kind === "promotion" &&
+    same(highlight.from!, { col: 3, row: 4 }) &&
+    same(highlight.to!, { col: 3, row: 5 }) &&
+    highlight.summary.includes("Promoted");
+}
+
+function validatesKingNoThreats(): boolean {
+  const state = customState([
+    bluePiece("blue-king", "King", { col: 3, row: 1 }),
+    redTypedPiece("red-rook", "Rook", { col: 0, row: 7 }),
+  ], "Blue");
+
+  return !isKingInCheck(state, "Blue") && getCheckedSides(state).length === 0;
+}
+
+function validatesKingOneThreat(): boolean {
+  const state = customState([
+    bluePiece("blue-king", "King", { col: 3, row: 1 }),
+    redTypedPiece("red-rook", "Rook", { col: 3, row: 7 }),
+  ], "Blue");
+  const threats = getKingThreats(state, "Blue");
+
+  return threats.length === 1 &&
+    threats[0].attackerPieceId === "red-rook" &&
+    threats[0].attackKind === "directCapture";
+}
+
+function validatesKingMultipleThreats(): boolean {
+  const state = customState([
+    bluePiece("blue-king", "King", { col: 3, row: 1 }),
+    redTypedPiece("red-rook", "Rook", { col: 3, row: 7 }),
+    redTypedPiece("red-bishop", "Bishop", { col: 6, row: 4 }),
+  ], "Blue");
+
+  return getKingThreats(state, "Blue").length === 2;
+}
+
+function validatesCannonCheckOneScreen(): boolean {
+  const state = customState([
+    bluePiece("blue-king", "King", { col: 4, row: 5 }),
+    redTypedPiece("red-cannon", "Cannon", { col: 4, row: 7 }),
+    bluePiece("screen", "Pawn", { col: 4, row: 6 }),
+  ], "Blue");
+  const threats = getKingThreats(state, "Blue");
+
+  return threats.length === 1 &&
+    threats[0].attackerPieceId === "red-cannon" &&
+    threats[0].reason.includes("exactly 1 screen");
+}
+
+function validatesCannonCheckZeroScreens(): boolean {
+  const state = customState([
+    bluePiece("blue-king", "King", { col: 4, row: 5 }),
+    redTypedPiece("red-cannon", "Cannon", { col: 4, row: 7 }),
+  ], "Blue");
+
+  return getKingThreats(state, "Blue").length === 0;
+}
+
+function validatesCannonCheckTooManyScreens(): boolean {
+  const state = customState([
+    bluePiece("blue-king", "King", { col: 4, row: 4 }),
+    redTypedPiece("red-cannon", "Cannon", { col: 4, row: 7 }),
+    redTypedPiece("screen-one", "Pawn", { col: 4, row: 6 }),
+    bluePiece("screen-two", "Pawn", { col: 4, row: 5 }),
+  ], "Blue");
+
+  return getKingThreats(state, "Blue").length === 0;
+}
+
+function validatesCombatCaptureCheck(): boolean {
+  const state = customState([
+    bluePiece("blue-king", "King", { col: 3, row: 4 }),
+    redTypedPiece("red-knight", "Knight", { col: 1, row: 5 }),
+  ], "Blue");
+  const threats = getKingThreats(state, "Blue");
+
+  return threats.length === 1 &&
+    threats[0].attackerPieceId === "red-knight" &&
+    threats[0].attackKind === "combatCapture";
+}
+
+function validatesMoveRecordCheckMarker(): boolean {
+  const state = customState([
+    bluePiece("blue-rook", "Rook", { col: 3, row: 1 }),
+    redTypedPiece("red-king", "King", { col: 3, row: 7 }),
+  ], "Blue");
+  const move = getLegalMove(state, "blue-rook", { col: 3, row: 2 });
+  if (!move) {
+    return false;
+  }
+
+  const after = applyMove(state, "blue-rook", move);
+  return after.lastMove?.checkedSides?.includes("Red") === true;
+}
+
+function validatesManualRollProfileMapping(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+    redPiece("defender", { col: 4, row: 5 }),
+  ]);
+  const attacker = state.pieces.attacker;
+  const defender = state.pieces.defender;
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) {
+    return false;
+  }
+
+  const pending = createPendingCombat(state, move, attacker, defender, 100);
+  const rolled = rollPendingCombatSide(pending, "Blue", { dieIndex: 1 });
+  return rolled.attackerDieIndex === 1 &&
+    rolled.attackerProfileValue === rolled.attackerProfile[1];
+}
+
+function validatesManualRollAttackerWinsTies(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+    redPiece("defender", { col: 4, row: 5 }),
+  ]);
+  const attacker = state.pieces.attacker;
+  const defender = state.pieces.defender;
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) {
+    return false;
+  }
+
+  const pending = createPendingCombat(state, move, attacker, defender, 100);
+  const blueRolled = rollPendingCombatSide(pending, "Blue", { dieIndex: 2 });
+  const bothRolled = rollPendingCombatSide(blueRolled, "Red", { dieIndex: 5 });
+  const after = applyMove(
+    { ...state, forcedDice: { ...pendingCombatToForcedDice(bothRolled), manualRoll: true } },
+    "attacker",
+    move,
+  );
+
+  return after.lastMove?.combat?.attackerValue === after.lastMove?.combat?.defenderValue &&
+    after.lastMove?.combat?.attackerWon === true &&
+    after.lastMove?.combat?.manualRoll === true &&
+    after.lastMove?.combat?.forcedDice === false;
+}
+
+function validatesManualRollTimeoutAutoRoll(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+    redPiece("defender", { col: 4, row: 5 }),
+  ]);
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) {
+    return false;
+  }
+
+  const pending = createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100);
+  const rolled = rollPendingCombatSide(pending, "Blue", { dieIndex: 0 });
+  const expired = autoRollExpiredPendingCombat(rolled, rolled.rollDeadlineAt + 1);
+  return expired.attackerDieIndex === 0 &&
+    expired.defenderDieIndex !== undefined &&
+    expired.defenderAutoRolled === true &&
+    expired.status === "bothRolled";
+}
+
+function validatesAutomaticCombatUnchanged(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+    redPiece("defender", { col: 4, row: 5 }),
+  ]);
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) {
+    return false;
+  }
+
+  const after = applyMove({ ...state, forcedDice: { attackerValue: 6, defenderValue: 1 } }, "attacker", move);
+  return after.lastMove?.combat?.manualRoll !== true &&
+    after.lastMove?.combat?.forcedDice === true &&
+    pieceAt(after, { col: 4, row: 5 })?.id === "attacker";
+}
+
+function finishedOnlineGame(rematch: NonNullable<OnlineGameDocument["rematch"]>): OnlineGameDocument {
+  return {
+    gameId: "ROOM01",
+    createdAt: 1,
+    updatedAt: 2,
+    status: "finished",
+    currentPlayer: "Red",
+    bluePlayerId: "blue-player",
+    redPlayerId: "red-player",
+    gameState: serializeGameStateForFirestore({ ...createInitialGameState(), winner: "Blue", turnNumber: 12 }),
+    moveHistory: [],
+    matchNumber: 1,
+    previousResults: [],
+    winner: "Blue",
+    reason: "kingCaptured",
+    rematch,
+  };
 }
 
 function customState(entries: Array<Piece & { position: Position }>, turn: "Blue" | "Red" = "Blue"): GameState {

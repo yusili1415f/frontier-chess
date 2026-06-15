@@ -207,9 +207,81 @@ h2 {
     inset 0 0 0 999px rgba(242, 201, 76, 0.14);
 }
 
+.square.last-move-from {
+  box-shadow: inset 0 0 0 3px rgba(59, 130, 246, 0.45);
+}
+
+.square.last-move-to {
+  box-shadow: inset 0 0 0 4px rgba(250, 204, 21, 0.82);
+}
+
+.square.last-battle {
+  box-shadow: inset 0 0 0 4px rgba(239, 68, 68, 0.86);
+}
+
+.square.last-captured-or-removed.last-move-from::after {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  color: rgba(239, 68, 68, 0.85);
+  content: "×";
+  font-size: 1rem;
+  font-weight: 950;
+}
+
+.square.last-cannon-screen {
+  box-shadow: inset 0 0 0 3px rgba(168, 85, 247, 0.55);
+}
+
+.square.last-cannon-screen::before {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.82);
+  content: "";
+  pointer-events: none;
+}
+
+.square.king-in-check {
+  box-shadow:
+    inset 0 0 0 4px rgba(239, 68, 68, 0.95),
+    0 0 16px rgba(239, 68, 68, 0.75);
+  animation: checkPulse 1s ease-in-out infinite;
+}
+
+.square.king-in-check::after {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  z-index: 2;
+  color: #dc2626;
+  content: "!";
+  font-size: 1.05rem;
+  font-weight: 950;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.square.threatening-king-square {
+  box-shadow: inset 0 0 0 3px rgba(251, 146, 60, 0.56);
+}
+
 .square.selected {
   outline: 5px solid #f2c94c;
   outline-offset: -4px;
+}
+
+.square.legal {
+  box-shadow: none;
+}
+
+.square.king-in-check.legal {
+  box-shadow:
+    inset 0 0 0 4px rgba(239, 68, 68, 0.95),
+    0 0 16px rgba(239, 68, 68, 0.75);
 }
 
 .square.human-selectable {
@@ -318,6 +390,29 @@ h2 {
   box-shadow:
     0 0 0 4px rgba(242, 201, 76, 0.55),
     0 10px 18px rgba(45, 38, 26, 0.28);
+}
+
+.piece-token.last-moved-piece {
+  outline: 3px solid rgba(250, 204, 21, 0.95);
+  box-shadow:
+    0 0 0 4px rgba(250, 204, 21, 0.24),
+    0 0 16px rgba(250, 204, 21, 0.82),
+    0 8px 16px rgba(45, 38, 26, 0.22);
+}
+
+.piece-token.king-in-check {
+  outline: 3px solid rgba(239, 68, 68, 0.95);
+  box-shadow:
+    0 0 0 5px rgba(239, 68, 68, 0.2),
+    0 0 18px rgba(239, 68, 68, 0.9),
+    0 8px 16px rgba(45, 38, 26, 0.22);
+}
+
+.piece-token.threatening-king {
+  box-shadow:
+    0 0 0 4px rgba(251, 146, 60, 0.22),
+    0 0 12px rgba(251, 146, 60, 0.9),
+    0 8px 16px rgba(45, 38, 26, 0.22);
 }
 
 .piece-token.human-token {
@@ -441,6 +536,25 @@ h2 {
   font-size: 0.9rem;
 }
 
+.threat-detail {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  border-radius: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(239, 68, 68, 0.08);
+  color: #7f1d1d;
+  font-size: 0.88rem;
+}
+
+.threat-detail ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
 .selected-summary strong {
   color: var(--ink);
 }
@@ -555,6 +669,13 @@ h2 {
   gap: 8px;
 }
 
+.log-badge-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
 .log-badge {
   border-radius: 999px;
   padding: 2px 7px;
@@ -563,6 +684,11 @@ h2 {
   font-size: 0.72rem;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.log-badge.check {
+  background: rgba(239, 68, 68, 0.16);
+  color: #991b1b;
 }
 
 .log-badge.combat {
@@ -588,6 +714,150 @@ h2 {
   background: rgba(242, 201, 76, 0.2);
   color: #7a4b09;
   font-weight: 900;
+}
+
+.check-warning-banner {
+  overflow: hidden;
+  width: min(100%, 760px);
+  border: 1px solid rgba(239, 68, 68, 0.42);
+  border-radius: 8px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #7f1d1d;
+  font-size: 0.9rem;
+  font-weight: 900;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+}
+
+.last-action-banner {
+  overflow: hidden;
+  width: min(100%, 760px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: #fff8df;
+  color: #5f4708;
+  font-size: 0.88rem;
+  font-weight: 850;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+}
+
+@keyframes checkPulse {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+
+  50% {
+    filter: brightness(1.22);
+  }
+}
+
+.last-action-banner.combatAttackerWon,
+.last-action-banner.combatDefenderWon {
+  background: rgba(239, 68, 68, 0.12);
+  color: #7f1d1d;
+}
+
+.combat-roll-panel {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 760px);
+  border: 2px solid rgba(142, 45, 108, 0.36);
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  background: #fff8df;
+  box-shadow: 0 16px 40px rgba(45, 38, 26, 0.18);
+}
+
+.combat-roll-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.combat-roll-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.combat-roll-header strong {
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: rgba(142, 45, 108, 0.12);
+  color: #7b255d;
+  white-space: nowrap;
+}
+
+.combat-roll-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.roll-card {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.roll-card strong {
+  color: var(--ink);
+}
+
+.roll-card.blue {
+  border-color: rgba(43, 103, 176, 0.34);
+}
+
+.roll-card.red {
+  border-color: rgba(166, 64, 57, 0.34);
+}
+
+.roll-card button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--ink);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.roll-card button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.auto-roll-note {
+  color: #991b1b;
+  font-weight: 850;
+}
+
+.combat-comparison {
+  display: grid;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(47, 132, 86, 0.12);
+  color: #256944;
+  font-size: 0.92rem;
+}
+
+.combat-waiting {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .scenario-panel h3 {
@@ -828,6 +1098,45 @@ h2 {
   background: #f7f0df;
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.online-rematch,
+.online-results {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.online-rematch label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.online-rematch select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.online-results h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.online-results ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
 .replay-panel.active {
@@ -1097,6 +1406,20 @@ h2 {
     padding: 7px 9px;
     font-size: 0.8rem;
     text-align: center;
+    pointer-events: none;
+  }
+
+  .last-action-banner {
+    position: absolute;
+    z-index: 11;
+    right: 12px;
+    bottom: 76px;
+    left: 12px;
+    width: auto;
+    max-height: 2.5em;
+    margin: 0;
+    padding: 6px 8px;
+    font-size: 0.72rem;
     pointer-events: none;
   }
 

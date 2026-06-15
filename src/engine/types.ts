@@ -5,6 +5,8 @@ export type PlayerSide = "Blue" | "Red";
 
 export type PieceType = "King" | "Rook" | "Knight" | "Bishop" | "Cannon" | "Guard" | "Pawn";
 
+export type CombatRollMode = "automatic" | "manual";
+
 export type Position = {
   col: number;
   row: number;
@@ -75,6 +77,9 @@ export type CombatResult = {
   attackerWon: boolean;
   target: Position;
   forcedDice?: boolean;
+  manualRoll?: boolean;
+  attackerAutoRolled?: boolean;
+  defenderAutoRolled?: boolean;
 };
 
 export type ForcedDice = {
@@ -82,7 +87,40 @@ export type ForcedDice = {
   defenderRollIndex?: number;
   attackerValue?: number;
   defenderValue?: number;
+  manualRoll?: boolean;
+  attackerAutoRolled?: boolean;
+  defenderAutoRolled?: boolean;
 };
+
+export type PendingCombatStatus =
+  | "waitingForAttackerRoll"
+  | "waitingForDefenderRoll"
+  | "bothRolled"
+  | "resolved";
+
+export interface PendingCombat {
+  combatId: string;
+  attackerPieceId: string;
+  defenderPieceId: string;
+  attackerSide: PlayerSide;
+  defenderSide: PlayerSide;
+  attackerSquare: Position;
+  defenderSquare: Position;
+  targetSquare: Position;
+  attackerProfileName: string;
+  defenderProfileName: string;
+  attackerProfile: number[];
+  defenderProfile: number[];
+  attackerDieIndex?: number;
+  defenderDieIndex?: number;
+  attackerProfileValue?: number;
+  defenderProfileValue?: number;
+  attackerAutoRolled?: boolean;
+  defenderAutoRolled?: boolean;
+  startedAt: number;
+  rollDeadlineAt: number;
+  status: PendingCombatStatus;
+}
 
 export type MoveRecord = {
   text: string;
@@ -99,6 +137,7 @@ export type MoveRecord = {
   cannon?: CannonCaptureDetails;
   promotedPiece?: Piece;
   promotionProfileName?: string;
+  checkedSides?: PlayerSide[];
 };
 
 export type GameState = {

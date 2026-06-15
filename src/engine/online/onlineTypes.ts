@@ -1,13 +1,54 @@
 import { MoveActor } from "../history";
-import { GameState, LegalMove, MoveRecord, PieceType, PlayerSide, Position } from "../types";
+import { GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position } from "../types";
 
 export type OnlineGameStatus = "waiting" | "active" | "finished";
 export type OnlinePlayerRole = PlayerSide | "Spectator";
 export type OnlineFinishReason = "kingCaptured" | "maxTurns" | "noLegalMoves";
+export type OnlineRematchSideMode = "same" | "swap";
+
+export interface OnlineMatchResult {
+  matchNumber: number;
+  winner: PlayerSide | "Draw" | null;
+  reason: OnlineFinishReason | null;
+  totalTurns: number;
+  finishedAt: number;
+}
+
+export interface OnlineRematchState {
+  requestedByBlue: boolean;
+  requestedByRed: boolean;
+  requestedAt?: number | null;
+  sideMode?: OnlineRematchSideMode;
+}
 
 export type OnlineMoveInput = {
   pieceId: string;
   to: Position;
+  combatRollMode?: "automatic" | "manual";
+};
+
+export type FirestorePendingCombat = {
+  combatId: string;
+  attackerPieceId: string;
+  defenderPieceId: string;
+  attackerSide: PlayerSide;
+  defenderSide: PlayerSide;
+  attackerSquare: string;
+  defenderSquare: string;
+  targetSquare: string;
+  attackerProfileName: string;
+  defenderProfileName: string;
+  attackerProfile: number[];
+  defenderProfile: number[];
+  attackerDieIndex?: number | null;
+  defenderDieIndex?: number | null;
+  attackerProfileValue?: number | null;
+  defenderProfileValue?: number | null;
+  attackerAutoRolled?: boolean | null;
+  defenderAutoRolled?: boolean | null;
+  startedAt: number;
+  rollDeadlineAt: number;
+  status: PendingCombat["status"];
 };
 
 export type OnlineMoveHistoryEntry = MoveRecord & {
@@ -43,10 +84,14 @@ export type FirestoreMoveHistoryEntry = {
   combatDefenderValue?: number | null;
   combatWinner?: PlayerSide | null;
   combatAttackerWon?: boolean | null;
+  combatManualRoll?: boolean | null;
+  combatAttackerAutoRolled?: boolean | null;
+  combatDefenderAutoRolled?: boolean | null;
   promotedPieceId?: string | null;
   promotionProfileName?: string | null;
   cannonScreenSquares?: string[];
   cannonStartsInHomeTerritory?: boolean | null;
+  checkedSides?: PlayerSide[];
 };
 
 export interface FirestoreGameState {
@@ -76,13 +121,18 @@ export interface OnlineGameDocument {
   redPlayerId?: string;
   gameState: FirestoreGameState;
   moveHistory: FirestoreMoveHistoryEntry[];
+  matchNumber: number;
+  rematch?: OnlineRematchState;
+  previousResults?: OnlineMatchResult[];
+  pendingCombat?: FirestorePendingCombat | null;
   winner?: PlayerSide | null;
   reason?: OnlineFinishReason | null;
 }
 
-export type OnlineGameViewDocument = Omit<OnlineGameDocument, "gameState" | "moveHistory"> & {
+export type OnlineGameViewDocument = Omit<OnlineGameDocument, "gameState" | "moveHistory" | "pendingCombat"> & {
   gameState: GameState;
   moveHistory: OnlineMoveHistoryEntry[];
+  pendingCombat?: PendingCombat | null;
 };
 
 export type OnlineSession = {

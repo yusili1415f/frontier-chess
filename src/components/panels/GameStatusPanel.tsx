@@ -1,4 +1,5 @@
 import { AIStatus, GameMode, getAISideLabel, getHumanSideLabel } from "../../engine/ai/aiTurn";
+import { KingThreat } from "../../engine/kingThreat";
 import { GameState } from "../../engine/types";
 
 type GameStatusPanelProps = {
@@ -9,6 +10,7 @@ type GameStatusPanelProps = {
   resultText: string;
   reachedMaxTurns: boolean;
   playOutcome?: string;
+  threats: KingThreat[];
 };
 
 export function GameStatusPanel({
@@ -19,9 +21,11 @@ export function GameStatusPanel({
   resultText,
   reachedMaxTurns,
   playOutcome,
+  threats,
 }: GameStatusPanelProps) {
   const status = replayActive ? "Replay mode" : state.winner ? "Game over" : aiStatus === "thinking" ? "AI thinking" : "Live";
   const reason = state.winner ? "King captured" : reachedMaxTurns ? "Max turns reached" : playOutcome === "Draw / no legal moves" ? "No legal moves" : "n/a";
+  const checkedSides = [...new Set(threats.map((threat) => threat.kingSide))];
 
   return (
     <section className="panel-block game-status-panel">
@@ -43,6 +47,8 @@ export function GameStatusPanel({
         <strong>{state.winner ?? "None"}</strong>
         <span>Reason</span>
         <strong>{reason}</strong>
+        <span>Check warning</span>
+        <strong>{checkedSides.length ? `${checkedSides.join(" and ")} King ${checkedSides.length === 1 ? "is" : "are"} in check` : "None"}</strong>
         <span>Result</span>
         <strong>{resultText}</strong>
       </div>

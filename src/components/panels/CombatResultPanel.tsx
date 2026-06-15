@@ -30,9 +30,18 @@ export function CombatResultPanel({ state, labelMode }: CombatResultPanelProps) 
             Defender profile: {getCombatProfileNameForPiece(record.defender)} [
             {getCombatProfileForPiece(record.defender).join(", ")}]
           </span>
-          <span>Rolls: {record.combat.attackerValue} vs {record.combat.defenderValue}</span>
+          <span>
+            Attacker die face {record.combat.attackerRollIndex + 1} → profile value {record.combat.attackerValue}
+            {record.combat.attackerAutoRolled ? " (auto-rolled)" : ""}
+          </span>
+          <span>
+            Defender die face {record.combat.defenderRollIndex + 1} → profile value {record.combat.defenderValue}
+            {record.combat.defenderAutoRolled ? " (auto-rolled)" : ""}
+          </span>
+          <span>Final comparison: {record.combat.attackerValue} vs {record.combat.defenderValue}</span>
           <span>Tie: attacker wins</span>
           {record.combat.forcedDice ? <span>Forced dice debug mode was used.</span> : null}
+          {record.combat.manualRoll ? <span>Manual dice roll flow was used.</span> : null}
           <span>
             Result: {record.combat.attackerWon ? record.attacker.side : record.defender.side} wins.{" "}
             {record.removedPiece.side} {record.removedPiece.type} removed.

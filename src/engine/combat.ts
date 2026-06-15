@@ -44,10 +44,15 @@ export function resolveCombat(
     winner: attackerWon ? attacker.side : defender.side,
     attackerWon,
     target,
-    forcedDice: forcedDice.attackerValue !== undefined ||
+    forcedDice: !forcedDice.manualRoll && (
+      forcedDice.attackerValue !== undefined ||
       forcedDice.defenderValue !== undefined ||
       forcedDice.attackerRollIndex !== undefined ||
-      forcedDice.defenderRollIndex !== undefined,
+      forcedDice.defenderRollIndex !== undefined
+    ),
+    manualRoll: forcedDice.manualRoll || undefined,
+    attackerAutoRolled: forcedDice.attackerAutoRolled || undefined,
+    defenderAutoRolled: forcedDice.defenderAutoRolled || undefined,
   };
 }
 

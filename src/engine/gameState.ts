@@ -4,6 +4,7 @@ import { getCombatProfileNameForPiece } from "./data/classProfiles";
 import { classifyMove, getLegalMove, getLegalMovesForPiece } from "./movement";
 import { applyPromotionIfNeeded } from "./promotion";
 import { createStartingPosition } from "./setup";
+import { getCheckedSides } from "./kingThreat";
 import { ForcedDice, GameState, LegalMove, MoveRecord, Piece, PlayerSide, Position } from "./types";
 
 export function createInitialGameState(): GameState {
@@ -184,17 +185,32 @@ function finishMove(
   winner?: PlayerSide,
 ): GameState {
   const nextTurn = winner ? state.turn : oppositeSide(state.turn);
+  const checkedSides = winner
+    ? []
+    : getCheckedSides({
+        ...state,
+        board,
+        pieces,
+        turn: nextTurn,
+        selectedPieceId: undefined,
+        winner,
+      });
+  const recordWithCheck: MoveRecord = {
+    ...record,
+    checkedSides: checkedSides.length ? checkedSides : undefined,
+  };
+
   return {
     board,
     pieces,
     turn: nextTurn,
     turnNumber: winner ? state.turnNumber : state.turnNumber + 1,
     selectedPieceId: undefined,
-    lastMove: record,
-    moveHistory: [record, ...state.moveHistory],
+    lastMove: recordWithCheck,
+    moveHistory: [recordWithCheck, ...state.moveHistory],
     forcedDice: state.forcedDice,
     winner,
-    log: [winner ? `${winner} wins by capturing the King.` : record.text, ...state.log],
+    log: [winner ? `${winner} wins by capturing the King.` : recordWithCheck.text, ...state.log],
   };
 }
 

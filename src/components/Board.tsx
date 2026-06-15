@@ -1,5 +1,7 @@
 import { getPiecePosition, samePosition } from "../engine/board";
 import { PieceLabelMode } from "../engine/data/classProfiles";
+import { getKingThreats } from "../engine/kingThreat";
+import { deriveLastMoveHighlight, includesHighlightSquare, isSameHighlightSquare } from "../engine/lastMoveHighlight";
 import { GameState, LegalMove, Position } from "../engine/types";
 import { Square } from "./Square";
 
@@ -13,6 +15,10 @@ type BoardProps = {
 
 export function Board({ state, legalMoves, onSquareClick, humanTurn = true, labelMode }: BoardProps) {
   const selectedPosition = state.selectedPieceId ? getPiecePosition(state.board, state.selectedPieceId) : undefined;
+  const lastMoveHighlight = deriveLastMoveHighlight(state.lastMove);
+  const kingThreats = [...getKingThreats(state, "Blue"), ...getKingThreats(state, "Red")];
+  const checkedKingIds = new Set(kingThreats.map((threat) => threat.kingPieceId));
+  const threateningPieceIds = new Set(kingThreats.map((threat) => threat.attackerPieceId));
   const displayRanks = [...state.board].reverse();
   const files = ["A", "B", "C", "D", "E", "F", "G"];
 
@@ -40,7 +46,18 @@ export function Board({ state, legalMoves, onSquareClick, humanTurn = true, labe
                 <Square
                   currentPlayer={state.turn}
                   humanTurn={humanTurn}
+                  isCannonScreenSquare={includesHighlightSquare(lastMoveHighlight.cannonScreenSquares, square.position)}
+                  isLastBattleSquare={
+                    (lastMoveHighlight.kind === "combatAttackerWon" || lastMoveHighlight.kind === "combatDefenderWon") &&
+                    isSameHighlightSquare(lastMoveHighlight.to, square.position)
+                  }
+                  isLastCapturedOrRemovedSquare={isSameHighlightSquare(lastMoveHighlight.removedPieceSquare, square.position)}
+                  isLastMoveFrom={isSameHighlightSquare(lastMoveHighlight.from, square.position)}
+                  isLastMovePiece={piece?.id === lastMoveHighlight.movedPieceId && isSameHighlightSquare(lastMoveHighlight.finalPieceSquare, square.position)}
+                  isLastMoveTo={isSameHighlightSquare(lastMoveHighlight.to, square.position)}
+                  isKingInCheck={piece ? checkedKingIds.has(piece.id) : false}
                   isSelected={isSelected}
+                  isThreateningKing={piece ? threateningPieceIds.has(piece.id) : false}
                   key={`${square.position.col}-${square.position.row}`}
                   labelMode={labelMode}
                   legalMove={legalMove}

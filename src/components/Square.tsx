@@ -8,13 +8,38 @@ type SquareProps = {
   piece?: PieceModel;
   currentPlayer: PlayerSide;
   humanTurn: boolean;
+  isCannonScreenSquare: boolean;
+  isLastBattleSquare: boolean;
+  isLastCapturedOrRemovedSquare: boolean;
+  isLastMoveFrom: boolean;
+  isLastMovePiece: boolean;
+  isLastMoveTo: boolean;
+  isKingInCheck: boolean;
   isSelected: boolean;
+  isThreateningKing: boolean;
   legalMove?: LegalMove;
   labelMode: PieceLabelMode;
   onClick: (position: Position) => void;
 };
 
-export function Square({ position, piece, currentPlayer, humanTurn, isSelected, legalMove, labelMode, onClick }: SquareProps) {
+export function Square({
+  position,
+  piece,
+  currentPlayer,
+  humanTurn,
+  isCannonScreenSquare,
+  isLastBattleSquare,
+  isLastCapturedOrRemovedSquare,
+  isLastMoveFrom,
+  isLastMovePiece,
+  isLastMoveTo,
+  isKingInCheck,
+  isSelected,
+  isThreateningKing,
+  legalMove,
+  labelMode,
+  onClick,
+}: SquareProps) {
   const label = coordinateLabel(position);
   const tooltip = legalMove?.classification
     ? `${classificationTitle(legalMove.classification.kind)}${
@@ -36,7 +61,14 @@ export function Square({ position, piece, currentPlayer, humanTurn, isSelected, 
         isHomeTerritory("Red", position) ? "red-home" : "",
         isFrontierZone(position) ? "frontier-zone" : "",
         isFrontierLine(position) ? "frontier-line" : "",
+        isLastMoveFrom ? "last-move-from" : "",
+        isLastMoveTo ? "last-move-to" : "",
+        isLastBattleSquare ? "last-battle" : "",
+        isLastCapturedOrRemovedSquare ? "last-captured-or-removed" : "",
+        isCannonScreenSquare ? "last-cannon-screen" : "",
+        isKingInCheck ? "king-in-check" : "",
         isSelected ? "selected" : "",
+        isThreateningKing ? "threatening-king-square" : "",
         legalMove ? `legal ${legalMove.classification?.kind ?? legalMove.kind}` : "",
         humanTurn && piece?.side === currentPlayer ? "human-selectable" : "",
         !humanTurn ? "ai-turn-locked" : "",
@@ -48,7 +80,16 @@ export function Square({ position, piece, currentPlayer, humanTurn, isSelected, 
       <span className="coord">{label}</span>
       {legalMove ? <span className="move-dot" aria-hidden="true" /> : null}
       {piece ? (
-        <Piece currentPlayer={currentPlayer} humanTurn={humanTurn} isSelected={isSelected} labelMode={labelMode} piece={piece} />
+        <Piece
+          currentPlayer={currentPlayer}
+          humanTurn={humanTurn}
+          isKingInCheck={isKingInCheck}
+          isLastMovePiece={isLastMovePiece}
+          isSelected={isSelected}
+          isThreateningKing={isThreateningKing}
+          labelMode={labelMode}
+          piece={piece}
+        />
       ) : null}
     </button>
   );

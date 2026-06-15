@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "./components/layout/AppLayout";
 import { Board } from "./components/Board";
+import { CheckWarningBanner } from "./components/CheckWarningBanner";
 import { DiceDebugPanel } from "./components/DiceDebugPanel";
 import { MoveLog } from "./components/MoveLog";
+import { LastActionBanner } from "./components/LastActionBanner";
 import { AIMoveExplanationPanel } from "./components/panels/AIMoveExplanationPanel";
 import { BalanceSimulatorPanel } from "./components/panels/BalanceSimulatorPanel";
 import { CombatResultPanel } from "./components/panels/CombatResultPanel";
+import { CombatRollPanel } from "./components/panels/CombatRollPanel";
 import { DisplaySettingsPanel } from "./components/panels/DisplaySettingsPanel";
 import { GameControlsPanel } from "./components/panels/GameControlsPanel";
 import { GameInfoPanel } from "./components/panels/GameInfoPanel";
@@ -25,24 +28,50 @@ import { createScenario, ScenarioId } from "./engine/scenarios";
 import { chooseHeuristicMove, runBatchHeuristicSimulations, runHeuristicSimulation } from "./engine/simulation/heuristicAI";
 import { runBatchRandomSimulations, runRandomSimulation, stepRandomMove } from "./engine/simulation/simulator";
 import { BatchSimulationSummary, ScoredMoveChoice, SimulationResult } from "./engine/simulation/simulationTypes";
-import { ForcedDice, GameState, Position } from "./engine/types";
+import { CombatRollMode, ForcedDice, GameState, LegalMove, PendingCombat, Position } from "./engine/types";
 import { PieceLabelMode } from "./engine/data/classProfiles";
+import { getKingThreats } from "./engine/kingThreat";
+import { deriveLastMoveHighlight } from "./engine/lastMoveHighlight";
+import {
+  autoRollExpiredPendingCombat,
+  canSideRollPendingCombat,
+  COMBAT_RESOLVE_DELAY_MS,
+  createPendingCombat,
+  pendingCombatToForcedDice,
+  rollPendingCombatSide,
+} from "./engine/pendingCombat";
 import { runRuleValidation } from "./engine/validation";
 import {
   createOnlineGame,
+  autoRollExpiredOnlineCombat,
+  cancelOnlineRematchRequest,
   getOrCreatePlayerId,
   joinOnlineGame,
   normalizeGameId,
+  requestOnlineRematch,
+  submitOnlineCombatRoll,
   submitOnlineMove,
   subscribeToOnlineGame,
 } from "./services/onlineGameService";
-import { OnlineGameDocument, OnlineGameViewDocument, OnlinePlayerRole } from "./engine/online/onlineTypes";
+import { OnlineGameDocument, OnlineGameViewDocument, OnlinePlayerRole, OnlineRematchSideMode } from "./engine/online/onlineTypes";
 
 const PIECE_LABEL_MODE_STORAGE_KEY = "frontierChessPieceLabelMode";
+const COMBAT_ROLL_MODE_STORAGE_KEY = "frontierChessCombatRollMode";
+
+type LocalPendingCombatContext = {
+  actor: MoveActor;
+  beforeSnapshot: GameSnapshot;
+  beforeState: GameState;
+  move: LegalMove;
+  pendingCombat: PendingCombat;
+  pieceId: string;
+  scoreChoice?: ScoredMoveChoice;
+};
 
 export function App() {
   const [state, setState] = useState(createInitialGameState);
   const [pieceLabelMode, setPieceLabelMode] = useState<PieceLabelMode>(() => getStoredPieceLabelMode());
+  const [combatRollMode, setCombatRollMode] = useState(() => getStoredCombatRollMode());
   const [gameMode, setGameMode] = useState<GameMode>("human-blue-vs-ai-red");
   const [aiStatus, setAIStatus] = useState<AIStatus>("idle");
   const [aiPlayOptions, setAIPlayOptions] = useState<AIPlayOptions>({
@@ -67,7 +96,10 @@ export function App() {
   const [onlineGame, setOnlineGame] = useState<OnlineGameViewDocument | undefined>();
   const [onlineBusy, setOnlineBusy] = useState(false);
   const [onlineError, setOnlineError] = useState<string | undefined>();
+  const [pendingCombatContext, setPendingCombatContext] = useState<LocalPendingCombatContext | undefined>();
+  const [pendingCombatNow, setPendingCombatNow] = useState(() => Date.now());
   const pendingAITurnKeyRef = useRef<string | undefined>();
+  const pendingCombatResolveRef = useRef<string | undefined>();
   const autoJoinAttemptedRef = useRef(false);
   const validation = useMemo(() => runRuleValidation(), []);
   const replaySnapshots = useMemo(() => createReplaySnapshots(initialSnapshot, historyEntries), [historyEntries, initialSnapshot]);
@@ -83,7 +115,8 @@ export function App() {
     onlineRole !== "Spectator" &&
     onlineRole === state.turn &&
     !state.winner;
-  const humanTurn = !replay.active && (
+  const pendingCombat = onlineGame?.pendingCombat ?? pendingCombatContext?.pendingCombat;
+  const humanTurn = !pendingCombat && !replay.active && (
     onlineActive
       ? onlineCanMove
       : isHumanTurn(state, gameMode) && !reachedMaxTurns && !playOutcome
@@ -91,6 +124,8 @@ export function App() {
   const legalMoves = useMemo(() => (humanTurn ? getSelectedLegalMoves(state) : []), [humanTurn, state]);
   const selectedPiece = displayState.selectedPieceId ? displayState.pieces[displayState.selectedPieceId] : undefined;
   const resultText = getPlayResultText(displayState.winner, displayReachedMaxTurns, displayPlayOutcome);
+  const lastMoveHighlight = useMemo(() => deriveLastMoveHighlight(displayState.lastMove), [displayState.lastMove]);
+  const kingThreats = useMemo(() => [...getKingThreats(displayState, "Blue"), ...getKingThreats(displayState, "Red")], [displayState]);
 
   useEffect(() => {
     console.group("Frontier Chess rules validation");
@@ -104,7 +139,11 @@ export function App() {
   }, [pieceLabelMode]);
 
   useEffect(() => {
-    if (onlineActive || replay.active || !isAITurn(state, gameMode) || state.winner || reachedMaxTurns || playOutcome) {
+    window.localStorage.setItem(COMBAT_ROLL_MODE_STORAGE_KEY, combatRollMode);
+  }, [combatRollMode]);
+
+  useEffect(() => {
+    if (onlineActive || pendingCombat || replay.active || !isAITurn(state, gameMode) || state.winner || reachedMaxTurns || playOutcome) {
       if (aiStatus === "thinking") {
         setAIStatus("idle");
       }
@@ -128,7 +167,83 @@ export function App() {
         pendingAITurnKeyRef.current = undefined;
       }
     };
-  }, [aiPlayOptions.aiMoveDelayMs, aiPlayOptions.heuristicRandomness, aiPlayOptions.topN, aiStatus, gameMode, onlineActive, playOutcome, reachedMaxTurns, replay.active, state]);
+  }, [aiPlayOptions.aiMoveDelayMs, aiPlayOptions.heuristicRandomness, aiPlayOptions.topN, aiStatus, gameMode, onlineActive, pendingCombat, playOutcome, reachedMaxTurns, replay.active, state]);
+
+  useEffect(() => {
+    if (!pendingCombat) {
+      return;
+    }
+
+    const interval = window.setInterval(() => setPendingCombatNow(Date.now()), 250);
+    return () => window.clearInterval(interval);
+  }, [pendingCombat]);
+
+  useEffect(() => {
+    if (!pendingCombatContext) {
+      return;
+    }
+
+    if (Date.now() >= pendingCombatContext.pendingCombat.rollDeadlineAt) {
+      setPendingCombatContext((current) => current
+        ? { ...current, pendingCombat: autoRollExpiredPendingCombat(current.pendingCombat) }
+        : current);
+    }
+  }, [pendingCombatContext, pendingCombatNow]);
+
+  useEffect(() => {
+    if (!onlineActive || !onlineGameId || !onlineGame?.pendingCombat) {
+      return;
+    }
+
+    if (Date.now() < onlineGame.pendingCombat.rollDeadlineAt) {
+      return;
+    }
+
+    autoRollExpiredOnlineCombat(onlineGameId).catch((error) => setOnlineError(error.message));
+  }, [onlineActive, onlineGame?.pendingCombat, onlineGameId, pendingCombatNow]);
+
+  useEffect(() => {
+    if (!pendingCombatContext || pendingCombatContext.pendingCombat.status !== "bothRolled") {
+      return;
+    }
+
+    if (pendingCombatResolveRef.current === pendingCombatContext.pendingCombat.combatId) {
+      return;
+    }
+
+    pendingCombatResolveRef.current = pendingCombatContext.pendingCombat.combatId;
+    const timer = window.setTimeout(() => resolvePendingLocalCombat(), COMBAT_RESOLVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [pendingCombatContext]);
+
+  useEffect(() => {
+    if (!pendingCombatContext) {
+      return;
+    }
+
+    const aiSides = (["Blue", "Red"] as const).filter((side) =>
+      isSideControlledByAI(gameMode, side) && canSideRollPendingCombat(pendingCombatContext.pendingCombat, side)
+    );
+    if (!aiSides.length) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setPendingCombatContext((current) => {
+        if (!current) {
+          return current;
+        }
+        return {
+          ...current,
+          pendingCombat: aiSides.reduce(
+            (combat, side) => rollPendingCombatSide(combat, side),
+            current.pendingCombat,
+          ),
+        };
+      });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [gameMode, pendingCombatContext]);
 
   useEffect(() => {
     if (!onlineGameId) {
@@ -141,7 +256,11 @@ export function App() {
       (game) => {
         setOnlineGame(game ?? undefined);
         if (game) {
+          if (onlinePlayerId) {
+            setOnlineRole(getRoleForOnlinePlayer(game, onlinePlayerId));
+          }
           cancelPendingAI();
+          cancelPendingCombat();
           setState(game.gameState);
           setInitialSnapshot(createGameSnapshot(game.gameState));
           setHistoryEntries([]);
@@ -152,7 +271,7 @@ export function App() {
       },
       (error) => setOnlineError(error.message),
     );
-  }, [onlineGameId]);
+  }, [onlineGameId, onlinePlayerId]);
 
   useEffect(() => {
     if (autoJoinAttemptedRef.current) {
@@ -201,6 +320,31 @@ export function App() {
     const legalMove = getSelectedLegalMoves({ ...state, selectedPieceId: pieceId }).find((move) => move.to.col === to.col && move.to.row === to.row);
     if (!legalMove) {
       return false;
+    }
+
+    const attacker = state.pieces[pieceId];
+    const defender = pieceAt(state, legalMove.to);
+    const shouldUseManualCombat = combatRollMode === "manual" &&
+      !onlineActive &&
+      gameMode !== "ai-vs-ai" &&
+      legalMove.classification?.kind === "combatCapture" &&
+      attacker &&
+      defender;
+
+    if (shouldUseManualCombat && attacker && defender) {
+      cancelPendingAI();
+      setPendingCombatContext({
+        actor,
+        beforeSnapshot,
+        beforeState: state,
+        move: legalMove,
+        pendingCombat: createPendingCombat(state, legalMove, attacker, defender),
+        pieceId,
+        scoreChoice,
+      });
+      setState((current) => ({ ...current, selectedPieceId: undefined }));
+      setAIStatus(actor === "AI" ? "thinking" : "idle");
+      return true;
     }
 
     const rawAfter = applyMove(state, pieceId, legalMove);
@@ -263,8 +407,14 @@ export function App() {
     setAIStatus("idle");
   }
 
+  function cancelPendingCombat() {
+    pendingCombatResolveRef.current = undefined;
+    setPendingCombatContext(undefined);
+  }
+
   function resetToState(nextState: GameState, scenarioId: ScenarioId = "standard") {
     cancelPendingAI();
+    cancelPendingCombat();
     const snapshot = createGameSnapshot(nextState);
     setState(nextState);
     setInitialSnapshot(snapshot);
@@ -308,6 +458,7 @@ export function App() {
       return;
     }
     cancelPendingAI();
+    cancelPendingCombat();
     setGameMode(nextMode);
     setReplay({ active: false, index: historyEntries.length });
     setState((current) => ({ ...current, selectedPieceId: undefined }));
@@ -356,6 +507,7 @@ export function App() {
     }
 
     cancelPendingAI();
+    cancelPendingCombat();
     const undoCount = getUndoCount(historyEntries, gameMode);
     const nextEntries = historyEntries.slice(0, -undoCount);
     const restoreFrom = historyEntries[historyEntries.length - undoCount].before;
@@ -371,11 +523,15 @@ export function App() {
       return;
     }
     cancelPendingAI();
+    cancelPendingCombat();
     setReplay({ active: true, index: clampReplayIndex(index, replaySnapshots) });
   }
 
   function goToLatestReplay() {
     if (onlineActive) {
+      return;
+    }
+    if (pendingCombat) {
       return;
     }
     cancelPendingAI();
@@ -388,6 +544,9 @@ export function App() {
 
   function handleStepAiMove() {
     if (onlineActive) {
+      return;
+    }
+    if (pendingCombat) {
       return;
     }
     setState((current) => {
@@ -405,6 +564,9 @@ export function App() {
     if (onlineActive) {
       return;
     }
+    if (pendingCombat) {
+      return;
+    }
     const result =
       aiMode === "heuristic"
         ? runHeuristicSimulation(createInitialGameState(), { maxTurns: 200 })
@@ -419,6 +581,9 @@ export function App() {
     if (onlineActive) {
       return;
     }
+    if (pendingCombat) {
+      return;
+    }
     const summary =
       aiMode === "heuristic"
         ? runBatchHeuristicSimulations(games, { maxTurns: 200 })
@@ -430,6 +595,9 @@ export function App() {
 
   function handleAutoPlay() {
     if (onlineActive) {
+      return;
+    }
+    if (pendingCombat) {
       return;
     }
     const result =
@@ -487,6 +655,36 @@ export function App() {
     resetToState(createInitialGameState(), "standard");
   }
 
+  async function handleRequestOnlineRematch(sideMode: OnlineRematchSideMode) {
+    if (!onlineGameId || !onlinePlayerId) {
+      return;
+    }
+    setOnlineBusy(true);
+    setOnlineError(undefined);
+    try {
+      await requestOnlineRematch(onlineGameId, onlinePlayerId, sideMode);
+    } catch (error) {
+      setOnlineError(error instanceof Error ? error.message : "Could not request rematch.");
+    } finally {
+      setOnlineBusy(false);
+    }
+  }
+
+  async function handleCancelOnlineRematch() {
+    if (!onlineGameId || !onlinePlayerId) {
+      return;
+    }
+    setOnlineBusy(true);
+    setOnlineError(undefined);
+    try {
+      await cancelOnlineRematchRequest(onlineGameId, onlinePlayerId);
+    } catch (error) {
+      setOnlineError(error instanceof Error ? error.message : "Could not cancel rematch request.");
+    } finally {
+      setOnlineBusy(false);
+    }
+  }
+
   async function submitSelectedOnlineMove(position: Position) {
     if (!onlineGameId || !onlinePlayerId || !state.selectedPieceId) {
       return;
@@ -497,10 +695,70 @@ export function App() {
       await submitOnlineMove(onlineGameId, onlinePlayerId, {
         pieceId: state.selectedPieceId,
         to: position,
+        combatRollMode,
       });
     } catch (error) {
       setOnlineError(error instanceof Error ? error.message : "Could not submit online move.");
     }
+  }
+
+  function rollPendingCombat(side: "Blue" | "Red") {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId) {
+        return;
+      }
+      submitOnlineCombatRoll(onlineGameId, onlinePlayerId, side).catch((error) => setOnlineError(error.message));
+      return;
+    }
+
+    setPendingCombatContext((current) => current
+      ? { ...current, pendingCombat: rollPendingCombatSide(current.pendingCombat, side) }
+      : current);
+  }
+
+  function resolvePendingLocalCombat() {
+    setPendingCombatContext((current) => {
+      if (!current || current.pendingCombat.status !== "bothRolled") {
+        return current;
+      }
+
+      const forcedDice = pendingCombatToForcedDice(current.pendingCombat);
+      const rawAfter = applyMove(
+        { ...current.beforeState, forcedDice: { ...current.beforeState.forcedDice, ...forcedDice, manualRoll: true } },
+        current.pieceId,
+        current.move,
+      );
+      if (rawAfter === current.beforeState || !rawAfter.lastMove) {
+        return undefined;
+      }
+
+      const after = annotateLastMove({ ...rawAfter, forcedDice: current.beforeState.forcedDice }, current.actor);
+      const explanation = current.actor === "AI" && current.scoreChoice
+        ? {
+            side: current.beforeState.turn,
+            piece: current.beforeState.pieces[current.pieceId],
+            from: current.scoreChoice.move.from,
+            to: current.scoreChoice.move.to,
+            target: pieceAt(current.beforeState, current.scoreChoice.move.to),
+            score: current.scoreChoice.score,
+          }
+        : undefined;
+      const afterSnapshot = createGameSnapshot(after, explanation, undefined);
+
+      pendingAITurnKeyRef.current = undefined;
+      pendingCombatResolveRef.current = undefined;
+      setState(after);
+      setAIMoveExplanation(explanation);
+      setPlayOutcome(undefined);
+      setAIStatus(current.actor === "AI" ? "moved" : "idle");
+      setHistoryEntries((entries) => {
+        const nextEntries = [...entries, { actor: current.actor, before: current.beforeSnapshot, after: afterSnapshot, record: after.lastMove! }];
+        setReplay({ active: false, index: nextEntries.length });
+        return nextEntries;
+      });
+
+      return undefined;
+    });
   }
 
   return (
@@ -508,15 +766,22 @@ export function App() {
       left={
         <>
           <GameInfoPanel state={displayState} onReset={handleResetGame} />
-          <DisplaySettingsPanel pieceLabelMode={pieceLabelMode} onPieceLabelModeChange={setPieceLabelMode} />
+          <DisplaySettingsPanel
+            combatRollMode={combatRollMode}
+            onCombatRollModeChange={setCombatRollMode}
+            pieceLabelMode={pieceLabelMode}
+            onPieceLabelModeChange={setPieceLabelMode}
+          />
           <OnlineGamePanel
             busy={onlineBusy}
             error={onlineError}
             game={onlineGame}
             gameId={onlineGameId}
             onCreateGame={handleCreateOnlineGame}
+            onCancelRematch={handleCancelOnlineRematch}
             onJoinGame={handleJoinOnlineGame}
             onLeaveGame={handleLeaveOnlineGame}
+            onRequestRematch={handleRequestOnlineRematch}
             role={onlineRole}
           />
           <GameStatusPanel
@@ -527,6 +792,7 @@ export function App() {
             replayActive={replay.active}
             resultText={resultText}
             state={displayState}
+            threats={kingThreats}
           />
           <PlayModePanel
             aiStatus={aiStatus}
@@ -559,7 +825,7 @@ export function App() {
             onReturnLive={returnToLiveGame}
           />
           <AIMoveExplanationPanel explanation={displayAIExplanation} labelMode={pieceLabelMode} />
-          <SelectedPiecePanel labelMode={pieceLabelMode} selectedPiece={selectedPiece} state={displayState} />
+          <SelectedPiecePanel labelMode={pieceLabelMode} selectedPiece={selectedPiece} state={displayState} threats={kingThreats} />
           <CombatResultPanel labelMode={pieceLabelMode} state={displayState} />
           <section className="panel-block validation-summary">
             <h2>Validation</h2>
@@ -583,6 +849,8 @@ export function App() {
           </header>
 
           {replay.active ? <div className="replay-banner">Replay Mode - normal play is paused</div> : null}
+          <CheckWarningBanner threats={kingThreats} />
+          <LastActionBanner highlight={lastMoveHighlight} />
           <div className="board-zone">
             <Board
               humanTurn={humanTurn}
@@ -599,6 +867,12 @@ export function App() {
             <span>Row 4: Frontier Line</span>
             <span>Rows 6-7: Red home</span>
           </div>
+          <CombatRollPanel
+            currentRoller={getCurrentRoller(gameMode, onlineActive, onlineRole ?? null)}
+            onRoll={rollPendingCombat}
+            pendingCombat={pendingCombat}
+            secondsRemaining={Math.max(0, Math.ceil(((pendingCombat?.rollDeadlineAt ?? 0) - pendingCombatNow) / 1000))}
+          />
         </section>
       }
       right={
@@ -661,7 +935,56 @@ function formatOnlineReason(reason: NonNullable<OnlineGameDocument["reason"]>): 
   }
 }
 
+function getRoleForOnlinePlayer(game: OnlineGameViewDocument, playerId: string): OnlinePlayerRole {
+  if (game.bluePlayerId === playerId) {
+    return "Blue";
+  }
+  if (game.redPlayerId === playerId) {
+    return "Red";
+  }
+  return "Spectator";
+}
+
 function getStoredPieceLabelMode(): PieceLabelMode {
   const stored = window.localStorage.getItem(PIECE_LABEL_MODE_STORAGE_KEY);
   return stored === "traditionalChinese" ? "traditionalChinese" : "english";
+}
+
+function getStoredCombatRollMode(): CombatRollMode {
+  const stored = window.localStorage.getItem(COMBAT_ROLL_MODE_STORAGE_KEY);
+  return stored === "manual" ? "manual" : "automatic";
+}
+
+function getCurrentRoller(
+  gameMode: GameMode,
+  onlineActive: boolean,
+  onlineRole: OnlinePlayerRole | null,
+): "Blue" | "Red" | "Both" | null {
+  if (onlineActive) {
+    return onlineRole === "Blue" || onlineRole === "Red" ? onlineRole : null;
+  }
+
+  switch (gameMode) {
+    case "human-vs-human":
+      return "Both";
+    case "human-blue-vs-ai-red":
+      return "Blue";
+    case "ai-blue-vs-human-red":
+      return "Red";
+    case "ai-vs-ai":
+      return null;
+  }
+}
+
+function isSideControlledByAI(gameMode: GameMode, side: "Blue" | "Red"): boolean {
+  switch (gameMode) {
+    case "human-vs-human":
+      return false;
+    case "human-blue-vs-ai-red":
+      return side === "Red";
+    case "ai-blue-vs-human-red":
+      return side === "Blue";
+    case "ai-vs-ai":
+      return true;
+  }
 }

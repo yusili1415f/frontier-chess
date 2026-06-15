@@ -1,6 +1,13 @@
 import { coordinateLabel, createEmptyBoard, getPiecePosition, setPieceAt } from "../board";
-import { GameState, MoveClassificationKind, MoveRecord, Piece, PlayerSide, Position } from "../types";
-import { FirestoreGameState, FirestoreMoveHistoryEntry, FirestorePiece, OnlineGameDocument, OnlineGameViewDocument } from "./onlineTypes";
+import { GameState, MoveClassificationKind, MoveRecord, PendingCombat, Piece, PlayerSide, Position } from "../types";
+import {
+  FirestoreGameState,
+  FirestoreMoveHistoryEntry,
+  FirestorePendingCombat,
+  FirestorePiece,
+  OnlineGameDocument,
+  OnlineGameViewDocument,
+} from "./onlineTypes";
 
 export function serializeGameStateForFirestore(gameState: GameState): FirestoreGameState {
   const moveHistory = gameState.moveHistory.map(serializeMoveRecordForFirestore);
@@ -67,14 +74,16 @@ export function deserializeGameStateFromFirestore(data: FirestoreGameState): Gam
   };
 }
 
-export function serializeOnlineGameForFirestore(game: Omit<OnlineGameDocument, "gameState" | "moveHistory"> & {
+export function serializeOnlineGameForFirestore(game: Omit<OnlineGameDocument, "gameState" | "moveHistory" | "pendingCombat"> & {
   gameState: GameState;
+  pendingCombat?: PendingCombat | null;
 }): OnlineGameDocument {
   const gameState = serializeGameStateForFirestore(game.gameState);
   return {
     ...game,
     gameState,
     moveHistory: gameState.moveHistory,
+    pendingCombat: game.pendingCombat ? serializePendingCombatForFirestore(game.pendingCombat) : null,
   };
 }
 
@@ -84,6 +93,7 @@ export function deserializeOnlineGameFromFirestore(game: OnlineGameDocument): On
     ...game,
     gameState,
     moveHistory: gameState.moveHistory,
+    pendingCombat: game.pendingCombat ? deserializePendingCombatFromFirestore(game.pendingCombat) : null,
   };
 }
 
@@ -138,10 +148,66 @@ function serializeMoveRecordForFirestore(record: MoveRecord): FirestoreMoveHisto
     combatDefenderValue: record.combat?.defenderValue ?? null,
     combatWinner: record.combat?.winner ?? null,
     combatAttackerWon: record.combat?.attackerWon ?? null,
+    combatManualRoll: record.combat?.manualRoll ?? null,
+    combatAttackerAutoRolled: record.combat?.attackerAutoRolled ?? null,
+    combatDefenderAutoRolled: record.combat?.defenderAutoRolled ?? null,
     promotedPieceId: record.promotedPiece?.id ?? null,
     promotionProfileName: record.promotionProfileName ?? null,
     cannonScreenSquares: record.cannon?.screenSquares.map(coordinateLabel) ?? [],
     cannonStartsInHomeTerritory: record.cannon?.startsInHomeTerritory ?? null,
+    checkedSides: record.checkedSides ?? [],
+  };
+}
+
+export function serializePendingCombatForFirestore(pendingCombat: PendingCombat): FirestorePendingCombat {
+  return {
+    combatId: pendingCombat.combatId,
+    attackerPieceId: pendingCombat.attackerPieceId,
+    defenderPieceId: pendingCombat.defenderPieceId,
+    attackerSide: pendingCombat.attackerSide,
+    defenderSide: pendingCombat.defenderSide,
+    attackerSquare: coordinateLabel(pendingCombat.attackerSquare),
+    defenderSquare: coordinateLabel(pendingCombat.defenderSquare),
+    targetSquare: coordinateLabel(pendingCombat.targetSquare),
+    attackerProfileName: pendingCombat.attackerProfileName,
+    defenderProfileName: pendingCombat.defenderProfileName,
+    attackerProfile: pendingCombat.attackerProfile,
+    defenderProfile: pendingCombat.defenderProfile,
+    attackerDieIndex: pendingCombat.attackerDieIndex ?? null,
+    defenderDieIndex: pendingCombat.defenderDieIndex ?? null,
+    attackerProfileValue: pendingCombat.attackerProfileValue ?? null,
+    defenderProfileValue: pendingCombat.defenderProfileValue ?? null,
+    attackerAutoRolled: pendingCombat.attackerAutoRolled ?? null,
+    defenderAutoRolled: pendingCombat.defenderAutoRolled ?? null,
+    startedAt: pendingCombat.startedAt,
+    rollDeadlineAt: pendingCombat.rollDeadlineAt,
+    status: pendingCombat.status,
+  };
+}
+
+export function deserializePendingCombatFromFirestore(entry: FirestorePendingCombat): PendingCombat {
+  return {
+    combatId: entry.combatId,
+    attackerPieceId: entry.attackerPieceId,
+    defenderPieceId: entry.defenderPieceId,
+    attackerSide: entry.attackerSide,
+    defenderSide: entry.defenderSide,
+    attackerSquare: squareToPosition(entry.attackerSquare),
+    defenderSquare: squareToPosition(entry.defenderSquare),
+    targetSquare: squareToPosition(entry.targetSquare),
+    attackerProfileName: entry.attackerProfileName,
+    defenderProfileName: entry.defenderProfileName,
+    attackerProfile: entry.attackerProfile,
+    defenderProfile: entry.defenderProfile,
+    attackerDieIndex: entry.attackerDieIndex ?? undefined,
+    defenderDieIndex: entry.defenderDieIndex ?? undefined,
+    attackerProfileValue: entry.attackerProfileValue ?? undefined,
+    defenderProfileValue: entry.defenderProfileValue ?? undefined,
+    attackerAutoRolled: entry.attackerAutoRolled ?? undefined,
+    defenderAutoRolled: entry.defenderAutoRolled ?? undefined,
+    startedAt: entry.startedAt,
+    rollDeadlineAt: entry.rollDeadlineAt,
+    status: entry.status,
   };
 }
 
@@ -180,6 +246,9 @@ function deserializeMoveRecordFromFirestore(entry: FirestoreMoveHistoryEntry): M
         winner: entry.combatWinner,
         attackerWon: entry.combatAttackerWon ?? entry.combatWinner === attacker.side,
         target: to,
+        manualRoll: entry.combatManualRoll || undefined,
+        attackerAutoRolled: entry.combatAttackerAutoRolled || undefined,
+        defenderAutoRolled: entry.combatDefenderAutoRolled || undefined,
       }
     : undefined;
 
@@ -215,6 +284,7 @@ function deserializeMoveRecordFromFirestore(entry: FirestoreMoveHistoryEntry): M
         }
       : undefined,
     promotionProfileName: entry.promotionProfileName ?? undefined,
+    checkedSides: entry.checkedSides?.length ? entry.checkedSides : undefined,
   };
 }
 

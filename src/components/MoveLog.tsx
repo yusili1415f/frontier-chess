@@ -19,7 +19,10 @@ export function MoveLog({ history, labelMode }: MoveLogProps) {
             <li key={`${record.turnNumber}-${record.text}`}>
               <div className="log-heading">
                 <strong>Turn {record.turnNumber} · {record.actor ?? "Unknown"} {record.player}</strong>
-                <span className={`log-badge ${actionType(record).toLowerCase().replace(" ", "-")}`}>{actionType(record)}</span>
+                <span className="log-badge-group">
+                  <span className={`log-badge ${actionType(record).toLowerCase().replace(" ", "-")}`}>{actionType(record)}</span>
+                  {record.checkedSides?.length ? <span className="log-badge check">Check</span> : null}
+                </span>
               </div>
               <span>{describeRecord(record, labelMode)}</span>
               <small>
@@ -53,10 +56,15 @@ function actionType(record: MoveRecord): string {
 }
 
 function describeRecord(record: MoveRecord, labelMode: PieceLabelMode): string {
+  const check = record.checkedSides?.length ? ` ${record.checkedSides.map((side) => `${side} King is in check`).join(" ")}` : "";
+
   if (record.combat && record.defender && record.removedPiece) {
     const forced = record.combat.forcedDice ? " Forced dice debug mode." : "";
+    const manual = record.combat.manualRoll
+      ? ` Manual dice: ${record.attacker.side} die ${record.combat.attackerRollIndex + 1} → ${record.combat.attackerValue}${record.combat.attackerAutoRolled ? " (auto)" : ""}; ${record.defender.side} die ${record.combat.defenderRollIndex + 1} → ${record.combat.defenderValue}${record.combat.defenderAutoRolled ? " (auto)" : ""}.`
+      : "";
     const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
-    return `${getCombatProfileNameForPiece(record.attacker)} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} attacks ${record.defender.side} ${getCombatProfileNameForPiece(record.defender)} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)}. Combat: ${getCombatProfileNameForPiece(record.attacker)} rolls ${record.combat.attackerValue}, ${getCombatProfileNameForPiece(record.defender)} rolls ${record.combat.defenderValue}. Attacker wins ties.${forced} ${record.combat.attackerWon ? "Attacker wins" : "Defender wins"}. ${record.removedPiece.side} ${record.removedPiece.type} removed.${promotion}`;
+    return `${getCombatProfileNameForPiece(record.attacker)} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} attacks ${record.defender.side} ${getCombatProfileNameForPiece(record.defender)} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)}. Combat: ${getCombatProfileNameForPiece(record.attacker)} rolls ${record.combat.attackerValue}, ${getCombatProfileNameForPiece(record.defender)} rolls ${record.combat.defenderValue}. Attacker wins ties.${forced}${manual} ${record.combat.attackerWon ? "Attacker wins" : "Defender wins"}. ${record.removedPiece.side} ${record.removedPiece.type} removed.${promotion}${check}`;
   }
 
   if (record.defender) {
@@ -66,9 +74,9 @@ function describeRecord(record: MoveRecord, labelMode: PieceLabelMode): string {
     const home = record.cannon?.startsInHomeTerritory ? " from home territory" : "";
     const noCombat = record.cannon?.startsInHomeTerritory ? " No combat because Cannon launched from home territory." : "";
     const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
-    return `${record.attacker.type} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} captures ${record.defender.side} ${record.defender.type} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)} directly${home}.${screen}${noCombat}${promotion}`;
+    return `${record.attacker.type} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} captures ${record.defender.side} ${record.defender.type} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)} directly${home}.${screen}${noCombat}${promotion}${check}`;
   }
 
   const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
-  return `${record.attacker.type} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} -> ${coordinateLabel(record.move.to)}.${promotion}`;
+  return `${record.attacker.type} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} -> ${coordinateLabel(record.move.to)}.${promotion}${check}`;
 }
