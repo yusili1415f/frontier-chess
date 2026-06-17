@@ -967,6 +967,9 @@ function getRoleForOnlinePlayer(game: OnlineGameViewDocument, playerId: string):
 
 function getStoredPieceLabelMode(): PieceLabelMode {
   const stored = window.localStorage.getItem(PIECE_LABEL_MODE_STORAGE_KEY);
+  if (stored === "icons") {
+    return "icons";
+  }
   return stored === "traditionalChinese" ? "traditionalChinese" : "english";
 }
 

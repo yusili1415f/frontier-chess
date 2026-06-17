@@ -2,7 +2,7 @@ import { CombatProfile, Piece, PieceType } from "../types";
 
 export const PIECE_TYPES: PieceType[] = ["King", "Rook", "Knight", "Bishop", "Cannon", "Guard", "Pawn"];
 
-export type PieceLabelMode = "english" | "traditionalChinese";
+export type PieceLabelMode = "english" | "traditionalChinese" | "icons";
 
 export const PIECE_ABBREVIATIONS: Record<PieceType, string> = {
   King: "K",
@@ -33,6 +33,17 @@ export function getPieceDisplayLabel(piece: Piece, mode: PieceLabelMode): string
   const base = labels[piece.type];
   const promotedMarker = piece.promoted && (piece.type === "Pawn" || piece.type === "Guard") ? "★" : "";
   return `${base}${promotedMarker}`;
+}
+
+export function getPieceIconPath(piece: Piece): string {
+  const side = piece.side.toLowerCase();
+  const file = piece.promoted && piece.type === "Pawn"
+    ? "frontier-pawn"
+    : piece.promoted && piece.type === "Guard"
+      ? "frontier-guard"
+      : piece.type.toLowerCase();
+
+  return `/icons/${side}/${file}.png`;
 }
 
 export const CLASS_COMBAT_PROFILES: Record<PieceType, CombatProfile> = {

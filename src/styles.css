@@ -369,6 +369,19 @@ h2 {
   font-weight: 850;
 }
 
+.piece-token.label-icons {
+  padding: 7%;
+}
+
+.piece-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
 .piece-token.promoted {
   outline: 3px solid #f2c94c;
 }
@@ -1431,6 +1444,10 @@ h2 {
 
   .piece-token.label-traditionalChinese {
     font-size: clamp(1.05rem, 6vw, 1.55rem);
+  }
+
+  .piece-token.label-icons {
+    padding: 6%;
   }
 
   .territory-key {

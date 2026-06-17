@@ -1,6 +1,6 @@
 import { createEmptyBoard, getPiecePosition, isFrontierLine, isFrontierZone, setPieceAt } from "./board";
 import { shouldCannonCaptureUseCombat, shouldTriggerCombat, resolveCombat } from "./combat";
-import { getCombatProfileForPiece, getPieceAbbreviation, getPieceDisplayLabel } from "./data/classProfiles";
+import { getCombatProfileForPiece, getPieceAbbreviation, getPieceDisplayLabel, getPieceIconPath } from "./data/classProfiles";
 import { applyMove, createInitialGameState } from "./gameState";
 import { countInterveningPieces, getLegalMove, getLegalMovesForPiece } from "./movement";
 import { classifyMove } from "./movement";
@@ -89,6 +89,8 @@ export function runRuleValidation(): ValidationResult {
     ["Promoted Pawn and Guard display as P★ and G★", validatesPromotedAbbreviations],
     ["Traditional Chinese labels are 王/車/馬/相/炮/士/兵", validatesTraditionalChineseLabels],
     ["Traditional Chinese promoted Pawn and Guard display as 兵★ and 士★", validatesTraditionalChinesePromotedLabels],
+    ["Icon mode uses side-specific icon asset paths", validatesPieceIconPaths],
+    ["Promoted Pawn and Guard use frontier icon assets", validatesPromotedPieceIconPaths],
     ["Changing piece label mode does not affect legal moves", validatesLabelModeDoesNotAffectLegalMoves],
     ["Random AI never selects illegal moves", validatesRandomAiLegalMoves],
     ["Simulation stops when a King is captured", validatesSimulationKingCaptureStop],
@@ -615,6 +617,19 @@ function validatesTraditionalChinesePromotedLabels(): boolean {
     getPieceDisplayLabel({ id: "king", side: "Blue", type: "King", promoted: true }, "traditionalChinese") === "王";
 }
 
+function validatesPieceIconPaths(): boolean {
+  return getPieceIconPath({ id: "king", side: "Blue", type: "King" }) === "/icons/blue/king.png" &&
+    getPieceIconPath({ id: "cannon", side: "Red", type: "Cannon" }) === "/icons/red/cannon.png" &&
+    getPieceIconPath({ id: "knight", side: "Blue", type: "Knight" }) === "/icons/blue/knight.png";
+}
+
+function validatesPromotedPieceIconPaths(): boolean {
+  return getPieceIconPath({ id: "pawn", side: "Blue", type: "Pawn", promoted: true }) === "/icons/blue/frontier-pawn.png" &&
+    getPieceIconPath({ id: "guard", side: "Red", type: "Guard", promoted: true }) === "/icons/red/frontier-guard.png" &&
+    getPieceIconPath({ id: "pawn", side: "Red", type: "Pawn" }) === "/icons/red/pawn.png" &&
+    getPieceIconPath({ id: "guard", side: "Blue", type: "Guard" }) === "/icons/blue/guard.png";
+}
+
 function validatesLabelModeDoesNotAffectLegalMoves(): boolean {
   const state = createInitialGameState();
   const piece = pieceAt(state, { col: 2, row: 1 });
@@ -624,6 +639,8 @@ function validatesLabelModeDoesNotAffectLegalMoves(): boolean {
   const before = getLegalMovesForPiece(state, piece.id).map((move) => coordinateKey(move.to)).sort().join("|");
   getPieceDisplayLabel(piece, "english");
   getPieceDisplayLabel(piece, "traditionalChinese");
+  getPieceDisplayLabel(piece, "icons");
+  getPieceIconPath(piece);
   const after = getLegalMovesForPiece(state, piece.id).map((move) => coordinateKey(move.to)).sort().join("|");
   return before === after;
 }

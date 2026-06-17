@@ -1,4 +1,4 @@
-import { getPieceDisplayLabel, PieceLabelMode } from "../engine/data/classProfiles";
+import { getPieceDisplayLabel, getPieceIconPath, PieceLabelMode } from "../engine/data/classProfiles";
 import { Piece as PieceModel } from "../engine/types";
 
 type PieceProps = {
@@ -39,7 +39,16 @@ export function Piece({
       ].join(" ")}
       title={`${piece.side} ${piece.type}${piece.promoted ? " — Promoted" : ""}`}
     >
-      {getPieceDisplayLabel(piece, labelMode)}
+      {labelMode === "icons" ? (
+        <img
+          alt={`${piece.side} ${piece.promoted ? "Frontier " : ""}${piece.type}`}
+          className="piece-icon"
+          draggable={false}
+          src={getPieceIconPath(piece)}
+        />
+      ) : (
+        getPieceDisplayLabel(piece, labelMode)
+      )}
     </span>
   );
 }

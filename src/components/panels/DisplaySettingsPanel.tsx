@@ -26,6 +26,7 @@ export function DisplaySettingsPanel({
         <select value={pieceLabelMode} onChange={(event) => onPieceLabelModeChange(event.target.value as PieceLabelMode)}>
           <option value="english">English: K / R / N / B / C / G / P</option>
           <option value="traditionalChinese">繁體中文: 王 / 車 / 馬 / 相 / 炮 / 士 / 兵</option>
+          <option value="icons">Icons</option>
         </select>
       </label>
       <label className="display-setting-field">
