@@ -31,14 +31,26 @@ export function CombatResultPanel({ state, labelMode }: CombatResultPanelProps) 
             {getCombatProfileForPiece(record.defender).join(", ")}]
           </span>
           <span>
-            Attacker die face {record.combat.attackerRollIndex + 1} → profile value {record.combat.attackerValue}
+            Attacker die face {record.combat.attackerRollIndex + 1} → profile value {record.combat.attackerBaseValue}
             {record.combat.attackerAutoRolled ? " (auto-rolled)" : ""}
           </span>
+          {record.combat.attackerModifiers.map((modifier) => (
+            <span key={`${modifier.source}-${modifier.pieceId}-${modifier.value}`}>
+              Faction effect: {modifier.source} {formatSigned(modifier.value)} — {modifier.description}.
+            </span>
+          ))}
+          <span>Attacker final value: {record.combat.attackerFinalValue}</span>
           <span>
-            Defender die face {record.combat.defenderRollIndex + 1} → profile value {record.combat.defenderValue}
+            Defender die face {record.combat.defenderRollIndex + 1} → profile value {record.combat.defenderBaseValue}
             {record.combat.defenderAutoRolled ? " (auto-rolled)" : ""}
           </span>
-          <span>Final comparison: {record.combat.attackerValue} vs {record.combat.defenderValue}</span>
+          {record.combat.defenderModifiers.map((modifier) => (
+            <span key={`${modifier.source}-${modifier.pieceId}-${modifier.value}`}>
+              Faction effect: {modifier.source} {formatSigned(modifier.value)} — {modifier.description}.
+            </span>
+          ))}
+          <span>Defender final value: {record.combat.defenderFinalValue}</span>
+          <span>Final comparison: {record.combat.attackerFinalValue} vs {record.combat.defenderFinalValue}</span>
           <span>Tie: attacker wins</span>
           {record.combat.forcedDice ? <span>Forced dice debug mode was used.</span> : null}
           {record.combat.manualRoll ? <span>Manual dice roll flow was used.</span> : null}
@@ -53,4 +65,8 @@ export function CombatResultPanel({ state, labelMode }: CombatResultPanelProps) 
       )}
     </section>
   );
+}
+
+function formatSigned(value: number): string {
+  return value >= 0 ? `+${value}` : `${value}`;
 }

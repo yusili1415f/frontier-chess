@@ -145,24 +145,158 @@ h2 {
   line-height: 1.35;
 }
 
-.faction-list {
+.faction-panel,
+.faction-side,
+.faction-summary,
+.faction-card-list {
   display: grid;
   gap: 8px;
 }
 
-.faction-item {
+.faction-side + .faction-side {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  padding-top: 12px;
+}
+
+.faction-select-field {
   display: grid;
-  gap: 4px;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.faction-select-field select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.faction-summary > p,
+.faction-card p,
+.faction-card dd {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+
+.faction-summary > p,
+.faction-card p {
+  margin-bottom: 0;
+}
+
+.faction-card {
+  display: grid;
+  gap: 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px;
   background: rgba(255, 253, 246, 0.62);
 }
 
-.faction-item span {
+.faction-card-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.faction-card-heading span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.faction-card dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.faction-card dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.faction-card dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.faction-card dd {
+  margin: 0;
+}
+
+.card-panel,
+.card-side,
+.hand-card-list,
+.draw-status {
+  display: grid;
+  gap: 8px;
+}
+
+.card-side + .card-side {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  padding-top: 12px;
+}
+
+.card-side h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.card-counts,
+.draw-status {
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.3;
+}
+
+.card-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.hand-card {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(255, 253, 246, 0.62);
+}
+
+.hand-card-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hand-card-heading span,
+.hand-card > span,
+.hand-card p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+
+.hand-card p {
+  margin-bottom: 0;
+}
+
+.hand-card button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 8px;
+  background: #eee7d7;
+  color: var(--muted);
+  font-weight: 800;
 }
 
 .board-frame {

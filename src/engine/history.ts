@@ -63,6 +63,24 @@ export function cloneGameState(state: GameState): GameState {
     ...state,
     board: state.board.map((rank) => rank.map((square) => ({ ...square, position: { ...square.position } }))),
     pieces: Object.fromEntries(Object.entries(state.pieces).map(([id, piece]) => [id, { ...piece }])),
+    cards: {
+      Blue: {
+        deck: state.cards.Blue.deck.map((card) => ({ ...card })),
+        hand: state.cards.Blue.hand.map((card) => ({ ...card })),
+        discard: state.cards.Blue.discard.map((card) => ({ ...card })),
+        handLimit: state.cards.Blue.handLimit,
+      },
+      Red: {
+        deck: state.cards.Red.deck.map((card) => ({ ...card })),
+        hand: state.cards.Red.hand.map((card) => ({ ...card })),
+        discard: state.cards.Red.discard.map((card) => ({ ...card })),
+        handLimit: state.cards.Red.handLimit,
+      },
+    },
+    drawState: {
+      Blue: { ...state.drawState.Blue },
+      Red: { ...state.drawState.Red },
+    },
     log: [...state.log],
     moveHistory: state.moveHistory.map(cloneMoveRecord),
     lastMove: state.lastMove ? cloneMoveRecord(state.lastMove) : undefined,

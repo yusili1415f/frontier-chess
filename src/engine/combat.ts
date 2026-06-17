@@ -1,6 +1,7 @@
 import { getCombatProfileForPiece } from "./data/classProfiles";
 import { getPiecePosition, isFrontierZone, isHomeTerritory } from "./board";
-import { CombatResult, ForcedDice, GameState, Piece, Position } from "./types";
+import { applyBeforeCombatFactionEffects } from "./factions/factionEngine";
+import { CombatModifier, CombatResult, ForcedDice, GameState, Piece, Position } from "./types";
 
 export function shouldTriggerCombat(target: Position): boolean {
   return isFrontierZone(target);
@@ -20,6 +21,7 @@ export function shouldCannonCaptureUseCombat(state: GameState, cannon: Piece, ta
 }
 
 export function resolveCombat(
+  state: GameState,
   attacker: Piece,
   defender: Piece,
   target: Position,
@@ -28,9 +30,21 @@ export function resolveCombat(
 ): CombatResult {
   const attackerRollIndex = clampDieIndex(forcedDice.attackerRollIndex ?? rollDieIndex());
   const defenderRollIndex = clampDieIndex(forcedDice.defenderRollIndex ?? rollDieIndex());
-  const attackerValue = forcedDice.attackerValue ?? getCombatProfileForPiece(attacker)[attackerRollIndex];
-  const defenderValue = forcedDice.defenderValue ?? getCombatProfileForPiece(defender)[defenderRollIndex];
-  const attackerWon = attackerValue >= defenderValue;
+  const attackerBaseValue = forcedDice.attackerValue ?? getCombatProfileForPiece(attacker)[attackerRollIndex];
+  const defenderBaseValue = forcedDice.defenderValue ?? getCombatProfileForPiece(defender)[defenderRollIndex];
+  const factionContext = applyBeforeCombatFactionEffects({
+    attacker,
+    defender,
+    attackerModifiers: [] as CombatModifier[],
+    defenderModifiers: [] as CombatModifier[],
+    gameState: state,
+    target,
+  });
+  const attackerModifiers = factionContext.attackerModifiers;
+  const defenderModifiers = factionContext.defenderModifiers;
+  const attackerFinalValue = applyModifiers(attackerBaseValue, attackerModifiers);
+  const defenderFinalValue = applyModifiers(defenderBaseValue, defenderModifiers);
+  const attackerWon = attackerFinalValue >= defenderFinalValue;
 
   return {
     attackerId: attacker.id,
@@ -39,8 +53,18 @@ export function resolveCombat(
     defenderType: defender.type,
     attackerRollIndex,
     defenderRollIndex,
-    attackerValue,
-    defenderValue,
+    attackerOriginalRollIndex: forcedDice.attackerOriginalRollIndex,
+    defenderOriginalRollIndex: forcedDice.defenderOriginalRollIndex,
+    attackerBaseValue,
+    defenderBaseValue,
+    attackerOriginalBaseValue: forcedDice.attackerOriginalValue,
+    defenderOriginalBaseValue: forcedDice.defenderOriginalValue,
+    attackerModifiers,
+    defenderModifiers,
+    attackerFinalValue,
+    defenderFinalValue,
+    attackerValue: attackerFinalValue,
+    defenderValue: defenderFinalValue,
     winner: attackerWon ? attacker.side : defender.side,
     attackerWon,
     target,
@@ -53,7 +77,13 @@ export function resolveCombat(
     manualRoll: forcedDice.manualRoll || undefined,
     attackerAutoRolled: forcedDice.attackerAutoRolled || undefined,
     defenderAutoRolled: forcedDice.defenderAutoRolled || undefined,
+    attackerUsedGambit: forcedDice.attackerUsedGambit || undefined,
+    defenderUsedGambit: forcedDice.defenderUsedGambit || undefined,
   };
+}
+
+export function applyModifiers(baseValue: number, modifiers: readonly CombatModifier[]): number {
+  return modifiers.reduce((total, modifier) => total + modifier.value, baseValue);
 }
 
 function randomDieIndex(): number {

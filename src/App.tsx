@@ -9,6 +9,7 @@ import { AIMoveExplanationPanel } from "./components/panels/AIMoveExplanationPan
 import { BalanceSimulatorPanel } from "./components/panels/BalanceSimulatorPanel";
 import { CombatResultPanel } from "./components/panels/CombatResultPanel";
 import { CombatRollPanel } from "./components/panels/CombatRollPanel";
+import { CardPanel } from "./components/panels/CardPanel";
 import { DisplaySettingsPanel } from "./components/panels/DisplaySettingsPanel";
 import { GameControlsPanel } from "./components/panels/GameControlsPanel";
 import { GameInfoPanel } from "./components/panels/GameInfoPanel";
@@ -22,23 +23,27 @@ import { AiMode, SimulationPanel } from "./components/panels/SimulationPanel";
 import { FactionPanel } from "./components/panels/FactionPanel";
 import { ScenarioPanel } from "./components/ScenarioPanel";
 import { APP_BUILD_LABEL } from "./appVersion";
+import { cancelActiveMoveCard, getAdvanceMoves, moveCardFromHandToDiscard, playCard, rebuildCardsForSelectedFactions } from "./engine/cards/cardEngine";
 import { AIPlayOptions, AIStatus, GameMode, getNextSwitchedMode, isAITurn, isHumanTurn } from "./engine/ai/aiTurn";
-import { applyMove, createInitialGameState, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice } from "./engine/gameState";
+import { applyAdvanceMove, applyMove, createInitialGameState, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice } from "./engine/gameState";
 import { annotateLastMove, createGameSnapshot, GameHistoryEntry, GameSnapshot, MoveActor } from "./engine/history";
 import { clampReplayIndex, createReplaySnapshots, getReplaySnapshot, ReplayState } from "./engine/replay";
 import { createScenario, ScenarioId } from "./engine/scenarios";
 import { chooseHeuristicMove, runBatchHeuristicSimulations, runHeuristicSimulation } from "./engine/simulation/heuristicAI";
 import { runBatchRandomSimulations, runRandomSimulation, stepRandomMove } from "./engine/simulation/simulator";
 import { BatchSimulationSummary, ScoredMoveChoice, SimulationResult } from "./engine/simulation/simulationTypes";
-import { CombatRollMode, ForcedDice, GameState, LegalMove, MobileBoardLockMode, PendingCombat, Position } from "./engine/types";
+import { CombatRollMode, ForcedDice, GameState, LegalMove, MobileBoardLockMode, PendingCombat, PlayerSide, Position } from "./engine/types";
 import { PieceLabelMode } from "./engine/data/classProfiles";
 import { getKingThreats } from "./engine/kingThreat";
 import { deriveLastMoveHighlight } from "./engine/lastMoveHighlight";
 import {
   autoRollExpiredPendingCombat,
   canSideRollPendingCombat,
+  canSideUseGambit,
   createPendingCombat,
+  passPendingCombatGambit,
   pendingCombatToForcedDice,
+  playPendingCombatGambit,
   rollPendingCombatSide,
 } from "./engine/pendingCombat";
 import { runRuleValidation } from "./engine/validation";
@@ -50,7 +55,10 @@ import {
   joinOnlineGame,
   normalizeGameId,
   requestOnlineRematch,
+  cancelOnlineActiveMoveCard,
+  submitOnlineCardPlay,
   submitOnlineCombatRoll,
+  submitOnlineGambitResponse,
   submitOnlineMove,
   subscribeToOnlineGame,
 } from "./services/onlineGameService";
@@ -124,7 +132,18 @@ export function App() {
       ? onlineCanMove
       : isHumanTurn(state, gameMode) && !reachedMaxTurns && !playOutcome
   );
-  const legalMoves = useMemo(() => (humanTurn ? getSelectedLegalMoves(state) : []), [humanTurn, state]);
+  const legalMoves = useMemo(() => {
+    if (!humanTurn) {
+      return [];
+    }
+    if (state.activeMoveCard && state.selectedPieceId) {
+      const from = state.board.flat().find((square) => square.pieceId === state.selectedPieceId)?.position;
+      return from
+        ? getAdvanceMoves(state, state.selectedPieceId).map((to) => ({ from, to, kind: "move" as const }))
+        : [];
+    }
+    return getSelectedLegalMoves(state);
+  }, [humanTurn, state]);
   const selectedPiece = displayState.selectedPieceId ? displayState.pieces[displayState.selectedPieceId] : undefined;
   const resultText = getPlayResultText(displayState.winner, displayReachedMaxTurns, displayPlayOutcome);
   const lastMoveHighlight = useMemo(() => deriveLastMoveHighlight(displayState.lastMove), [displayState.lastMove]);
@@ -190,7 +209,11 @@ export function App() {
       return;
     }
 
-    if (Date.now() >= pendingCombatContext.pendingCombat.rollDeadlineAt) {
+    if (
+      Date.now() >= pendingCombatContext.pendingCombat.rollDeadlineAt ||
+      (pendingCombatContext.pendingCombat.status === "gambitWindow" &&
+        Date.now() >= (pendingCombatContext.pendingCombat.gambitWindowDeadlineAt ?? Number.POSITIVE_INFINITY))
+    ) {
       setPendingCombatContext((current) => current
         ? { ...current, pendingCombat: autoRollExpiredPendingCombat(current.pendingCombat) }
         : current);
@@ -204,6 +227,7 @@ export function App() {
 
     if (
       Date.now() < onlineGame.pendingCombat.rollDeadlineAt &&
+      (onlineGame.pendingCombat.status !== "gambitWindow" || Date.now() < (onlineGame.pendingCombat.gambitWindowDeadlineAt ?? Number.POSITIVE_INFINITY)) &&
       (onlineGame.pendingCombat.status !== "revealingResult" || Date.now() < (onlineGame.pendingCombat.resolveAfterAt ?? 0))
     ) {
       return;
@@ -247,7 +271,7 @@ export function App() {
         return {
           ...current,
           pendingCombat: aiSides.reduce(
-            (combat, side) => rollPendingCombatSide(combat, side),
+            (combat, side) => rollPendingCombatSide(combat, side, {}, current.beforeState),
             current.pendingCombat,
           ),
         };
@@ -320,6 +344,21 @@ export function App() {
     }
 
     if (!state.selectedPieceId) {
+      return;
+    }
+
+    if (state.activeMoveCard) {
+      const rawAfter = applyAdvanceMove(state, state.selectedPieceId, position);
+      if (rawAfter !== state && rawAfter.lastMove) {
+        const beforeSnapshot = createGameSnapshot(state, aiMoveExplanation, playOutcome);
+        const after = annotateLastMove(rawAfter, "Human");
+        const afterSnapshot = createGameSnapshot(after, undefined, undefined);
+        setState(after);
+        setAIMoveExplanation(undefined);
+        setPlayOutcome(undefined);
+        setHistoryEntries((entries) => [...entries, { actor: "Human", before: beforeSnapshot, after: afterSnapshot, record: after.lastMove! }]);
+        setReplay({ active: false, index: historyEntries.length + 1 });
+      }
       return;
     }
 
@@ -462,6 +501,43 @@ export function App() {
 
   function handleForcedDiceChange(forcedDice: ForcedDice) {
     setState((current) => setForcedDice(current, forcedDice));
+  }
+
+  function handleFactionChange(side: PlayerSide, factionId: string) {
+    if (onlineActive) {
+      return;
+    }
+    setState((current) => ({
+      ...rebuildCardsForSelectedFactions(current, {
+        ...current.selectedFactions,
+        [side]: factionId,
+      }),
+    }));
+  }
+
+  function handlePlayCard(side: PlayerSide, cardId: string) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole || side !== state.turn) {
+        return;
+      }
+      submitOnlineCardPlay(onlineGameId, onlinePlayerId, cardId).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    if (replay.active || pendingCombat || side !== state.turn) {
+      return;
+    }
+    setState((current) => playCard(current, side, cardId, { timing: "beforeMove" }));
+  }
+
+  function handleCancelAdvance() {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || onlineRole !== state.turn) {
+        return;
+      }
+      cancelOnlineActiveMoveCard(onlineGameId, onlinePlayerId).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setState((current) => cancelActiveMoveCard(current, current.turn));
   }
 
   function handleGameModeChange(nextMode: GameMode) {
@@ -626,7 +702,7 @@ export function App() {
     setOnlineError(undefined);
     try {
       const playerId = getOrCreatePlayerId();
-      const gameId = await createOnlineGame(playerId);
+      const gameId = await createOnlineGame(playerId, state.selectedFactions);
       setOnlinePlayerId(playerId);
       setOnlineRole("Blue");
       setOnlineGameId(gameId);
@@ -723,7 +799,40 @@ export function App() {
     }
 
     setPendingCombatContext((current) => current
-      ? { ...current, pendingCombat: rollPendingCombatSide(current.pendingCombat, side) }
+      ? { ...current, pendingCombat: rollPendingCombatSide(current.pendingCombat, side, {}, current.beforeState) }
+      : current);
+  }
+
+  function playGambit(side: "Blue" | "Red") {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineGambitResponse(onlineGameId, onlinePlayerId, side, "play").catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => {
+      if (!current || !canSideUseGambit(current.pendingCombat, current.beforeState, side)) {
+        return current;
+      }
+      return {
+        ...current,
+        beforeState: moveCardFromHandToDiscard(current.beforeState, side, "basic_gambit"),
+        pendingCombat: playPendingCombatGambit(current.pendingCombat, side),
+      };
+    });
+  }
+
+  function passGambit(side: "Blue" | "Red") {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineGambitResponse(onlineGameId, onlinePlayerId, side, "pass").catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => current
+      ? { ...current, pendingCombat: passPendingCombatGambit(current.pendingCombat, side) }
       : current);
   }
 
@@ -778,7 +887,17 @@ export function App() {
       left={
         <>
           <GameInfoPanel state={displayState} onReset={handleResetGame} />
-          <FactionPanel />
+          <FactionPanel
+            disabled={onlineActive}
+            onFactionChange={handleFactionChange}
+            selectedFactions={displayState.selectedFactions}
+          />
+          <CardPanel
+            canAct={humanTurn && !replay.active}
+            onCancelAdvance={handleCancelAdvance}
+            onPlayCard={handlePlayCard}
+            state={displayState}
+          />
           <DisplaySettingsPanel
             combatRollMode={combatRollMode}
             mobileBoardLockMode={mobileBoardLockMode}
@@ -892,6 +1011,8 @@ export function App() {
           </div>
           <CombatRollPanel
             currentRoller={getCurrentRoller(gameMode, onlineActive, onlineRole ?? null)}
+            onPassGambit={passGambit}
+            onPlayGambit={playGambit}
             onRoll={rollPendingCombat}
             pendingCombat={pendingCombat}
             resolveSecondsRemaining={Math.max(0, Math.ceil(((pendingCombat?.resolveAfterAt ?? 0) - pendingCombatNow) / 1000))}

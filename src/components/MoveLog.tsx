@@ -1,6 +1,6 @@
 import { coordinateLabel } from "../engine/board";
 import { getCombatProfileNameForPiece, getPieceDisplayLabel, PieceLabelMode } from "../engine/data/classProfiles";
-import { MoveRecord } from "../engine/types";
+import { CombatModifier, MoveRecord } from "../engine/types";
 
 type MoveLogProps = {
   history: MoveRecord[];
@@ -60,11 +60,14 @@ function describeRecord(record: MoveRecord, labelMode: PieceLabelMode): string {
 
   if (record.combat && record.defender && record.removedPiece) {
     const forced = record.combat.forcedDice ? " Forced dice debug mode." : "";
+    const attackerModifiers = describeModifiers(record.combat.attackerModifiers);
+    const defenderModifiers = describeModifiers(record.combat.defenderModifiers);
+    const gambit = describeGambit(record);
     const manual = record.combat.manualRoll
-      ? ` Manual dice: ${record.attacker.side} die ${record.combat.attackerRollIndex + 1} → ${record.combat.attackerValue}${record.combat.attackerAutoRolled ? " (auto)" : ""}; ${record.defender.side} die ${record.combat.defenderRollIndex + 1} → ${record.combat.defenderValue}${record.combat.defenderAutoRolled ? " (auto)" : ""}.`
+      ? ` Manual dice: ${record.attacker.side} die ${record.combat.attackerRollIndex + 1} → profile value ${record.combat.attackerBaseValue}${record.combat.attackerAutoRolled ? " (auto)" : ""}; ${record.defender.side} die ${record.combat.defenderRollIndex + 1} → profile value ${record.combat.defenderBaseValue}${record.combat.defenderAutoRolled ? " (auto)" : ""}.`
       : "";
     const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
-    return `${getCombatProfileNameForPiece(record.attacker)} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} attacks ${record.defender.side} ${getCombatProfileNameForPiece(record.defender)} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)}. Combat: ${getCombatProfileNameForPiece(record.attacker)} rolls ${record.combat.attackerValue}, ${getCombatProfileNameForPiece(record.defender)} rolls ${record.combat.defenderValue}. Attacker wins ties.${forced}${manual} ${record.combat.attackerWon ? "Attacker wins" : "Defender wins"}. ${record.removedPiece.side} ${record.removedPiece.type} removed.${promotion}${check}`;
+    return `${getCombatProfileNameForPiece(record.attacker)} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} attacks ${record.defender.side} ${getCombatProfileNameForPiece(record.defender)} (${getPieceDisplayLabel(record.defender, labelMode)}) ${coordinateLabel(record.move.to)}. Combat: ${getCombatProfileNameForPiece(record.attacker)} rolls ${record.combat.attackerRollIndex + 1} → profile value ${record.combat.attackerBaseValue}.${attackerModifiers} Final ${record.combat.attackerFinalValue}. ${getCombatProfileNameForPiece(record.defender)} rolls ${record.combat.defenderRollIndex + 1} → profile value ${record.combat.defenderBaseValue}.${defenderModifiers} Final ${record.combat.defenderFinalValue}.${gambit} Attacker wins ties.${forced}${manual} ${record.combat.attackerWon ? "Attacker wins" : "Defender wins"}. ${record.removedPiece.side} ${record.removedPiece.type} removed.${promotion}${check}`;
   }
 
   if (record.defender) {
@@ -79,4 +82,29 @@ function describeRecord(record: MoveRecord, labelMode: PieceLabelMode): string {
 
   const promotion = record.promotedPiece ? ` ${record.promotedPiece.side} ${record.promotedPiece.type} promoted to ${record.promotionProfileName}.` : "";
   return `${record.attacker.type} (${getPieceDisplayLabel(record.attacker, labelMode)}) ${coordinateLabel(record.move.from)} -> ${coordinateLabel(record.move.to)}.${promotion}${check}`;
+}
+
+function describeModifiers(modifiers: CombatModifier[]): string {
+  if (!modifiers.length) {
+    return "";
+  }
+  return ` ${modifiers.map((modifier) => `${modifier.source} triggered: ${formatSigned(modifier.value)}.`).join(" ")}`;
+}
+
+function formatSigned(value: number): string {
+  return value >= 0 ? `+${value}` : `${value}`;
+}
+
+function describeGambit(record: MoveRecord): string {
+  if (!record.combat) {
+    return "";
+  }
+  const entries: string[] = [];
+  if (record.combat.attackerUsedGambit && record.combat.attackerOriginalRollIndex !== undefined) {
+    entries.push(`${record.attacker.side} plays Gambit and rerolls: die face ${record.combat.attackerOriginalRollIndex + 1} → ${record.combat.attackerRollIndex + 1}, profile value ${record.combat.attackerOriginalBaseValue} → ${record.combat.attackerBaseValue}.`);
+  }
+  if (record.defender && record.combat.defenderUsedGambit && record.combat.defenderOriginalRollIndex !== undefined) {
+    entries.push(`${record.defender.side} plays Gambit and rerolls: die face ${record.combat.defenderOriginalRollIndex + 1} → ${record.combat.defenderRollIndex + 1}, profile value ${record.combat.defenderOriginalBaseValue} → ${record.combat.defenderBaseValue}.`);
+  }
+  return entries.length ? ` ${entries.join(" ")}` : "";
 }

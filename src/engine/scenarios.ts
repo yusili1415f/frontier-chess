@@ -2,6 +2,8 @@ import { createEmptyBoard, setPieceAt } from "./board";
 import { GameState, Piece, PieceType, PlayerSide, Position } from "./types";
 import { createInitialGameState } from "./gameState";
 import { applyPromotionIfNeeded } from "./promotion";
+import { DEFAULT_SELECTED_FACTIONS } from "../data/factions/testFactions";
+import { createDefaultCards, createDefaultDrawState } from "./cards/cardEngine";
 
 export type ScenarioId =
   | "standard"
@@ -183,11 +185,15 @@ function scenarioState(entries: Array<Piece & { position: Position }>, turn: Pla
     board = setPieceAt(board, position, piece.id);
   });
 
+  const selectedFactions = { ...DEFAULT_SELECTED_FACTIONS };
   return {
     board,
     pieces,
     turn,
     turnNumber: 1,
+    selectedFactions,
+    cards: createDefaultCards(selectedFactions),
+    drawState: createDefaultDrawState(),
     selectedPieceId: entries[0]?.id,
     log: ["Scenario loaded."],
     moveHistory: [],

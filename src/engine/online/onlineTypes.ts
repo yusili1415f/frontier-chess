@@ -1,5 +1,5 @@
 import { MoveActor } from "../history";
-import { GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position } from "../types";
+import { ActiveMoveCard, CombatModifier, DrawStateBySide, GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position, SelectedFactions } from "../types";
 
 export type OnlineGameStatus = "waiting" | "active" | "finished";
 export type OnlineGameVersion = "core" | "faction";
@@ -43,10 +43,24 @@ export type FirestorePendingCombat = {
   defenderProfile: number[];
   attackerDieIndex?: number | null;
   defenderDieIndex?: number | null;
+  attackerOriginalDieIndex?: number | null;
+  defenderOriginalDieIndex?: number | null;
   attackerProfileValue?: number | null;
   defenderProfileValue?: number | null;
+  attackerOriginalProfileValue?: number | null;
+  defenderOriginalProfileValue?: number | null;
+  attackerFinalValue?: number | null;
+  defenderFinalValue?: number | null;
+  attackerModifiers?: CombatModifier[];
+  defenderModifiers?: CombatModifier[];
   attackerAutoRolled?: boolean | null;
   defenderAutoRolled?: boolean | null;
+  attackerUsedGambit?: boolean | null;
+  defenderUsedGambit?: boolean | null;
+  attackerPassedGambit?: boolean | null;
+  defenderPassedGambit?: boolean | null;
+  gambitWindowStartedAt?: number | null;
+  gambitWindowDeadlineAt?: number | null;
   resultRevealedAt?: number | null;
   resolveAfterAt?: number | null;
   winnerSide?: PlayerSide | null;
@@ -88,11 +102,23 @@ export type FirestoreMoveHistoryEntry = {
   targetPieceSide?: PlayerSide | null;
   combatAttackerValue?: number | null;
   combatDefenderValue?: number | null;
+  combatAttackerBaseValue?: number | null;
+  combatDefenderBaseValue?: number | null;
+  combatAttackerOriginalRollIndex?: number | null;
+  combatDefenderOriginalRollIndex?: number | null;
+  combatAttackerOriginalBaseValue?: number | null;
+  combatDefenderOriginalBaseValue?: number | null;
+  combatAttackerFinalValue?: number | null;
+  combatDefenderFinalValue?: number | null;
+  combatAttackerModifiers?: CombatModifier[];
+  combatDefenderModifiers?: CombatModifier[];
   combatWinner?: PlayerSide | null;
   combatAttackerWon?: boolean | null;
   combatManualRoll?: boolean | null;
   combatAttackerAutoRolled?: boolean | null;
   combatDefenderAutoRolled?: boolean | null;
+  combatAttackerUsedGambit?: boolean | null;
+  combatDefenderUsedGambit?: boolean | null;
   promotedPieceId?: string | null;
   promotionProfileName?: string | null;
   cannonScreenSquares?: string[];
@@ -103,6 +129,10 @@ export type FirestoreMoveHistoryEntry = {
 export interface FirestoreGameState {
   turn: PlayerSide;
   turnNumber: number;
+  selectedFactions?: SelectedFactions | null;
+  cards?: FirestoreCardStateBySide | null;
+  drawState?: DrawStateBySide | null;
+  activeMoveCard?: ActiveMoveCard | null;
   selectedPieceId?: string | null;
   pieces: FirestorePiece[];
   log: string[];
@@ -116,6 +146,15 @@ export interface FirestoreGameState {
   } | null;
   winner?: PlayerSide | null;
 }
+
+export type FirestorePlayerCardState = {
+  deckIds: string[];
+  handIds: string[];
+  discardIds: string[];
+  handLimit: number;
+};
+
+export type FirestoreCardStateBySide = Record<PlayerSide, FirestorePlayerCardState>;
 
 export interface OnlineGameDocument {
   gameId: string;

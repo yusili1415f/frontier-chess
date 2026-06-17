@@ -1,25 +1,30 @@
-import { PieceType, PlayerSide } from "../types";
+export type FactionCardType = "Banner" | "Order" | "Relic";
 
-export type FactionId = "core" | "test-vanguard" | "test-bastion";
+export type FactionTimingWindow =
+  | "passive"
+  | "beforeMove"
+  | "afterMove"
+  | "beforeCombat"
+  | "afterCombat"
+  | "afterCapture"
+  | "afterPiecePromoted"
+  | "afterEnemyMove";
 
-export type FactionRuleStatus = "placeholder" | "experimental" | "ready";
-
-export type FactionPieceModifier = {
-  pieceType: PieceType;
-  note: string;
-};
-
-export type FactionDefinition = {
-  id: FactionId;
+export interface FactionCard {
+  id: string;
   name: string;
-  side?: PlayerSide;
-  status: FactionRuleStatus;
-  summary: string;
-  pieceModifiers: FactionPieceModifier[];
-};
+  type: FactionCardType;
+  timing: FactionTimingWindow;
+  description: string;
+  implemented: boolean;
+}
 
-export type FactionSelection = Partial<Record<PlayerSide, FactionId>>;
+export interface Faction {
+  id: string;
+  name: string;
+  shortName?: string;
+  description: string;
+  cards: FactionCard[];
+}
 
-export type FactionEngineContext = {
-  selection: FactionSelection;
-};
+export type { SelectedFactions } from "../types";

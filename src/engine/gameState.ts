@@ -5,15 +5,21 @@ import { classifyMove, getLegalMove, getLegalMovesForPiece } from "./movement";
 import { applyPromotionIfNeeded } from "./promotion";
 import { createStartingPosition } from "./setup";
 import { getCheckedSides } from "./kingThreat";
-import { ForcedDice, GameState, LegalMove, MoveRecord, Piece, PlayerSide, Position } from "./types";
+import { DEFAULT_SELECTED_FACTIONS } from "../data/factions/testFactions";
+import { applyCardDrawTriggersAfterMove, completeActiveMoveCard, createDefaultCards, createDefaultDrawState, getAdvanceMoves } from "./cards/cardEngine";
+import { CombatModifier, ForcedDice, GameState, LegalMove, MoveRecord, Piece, PlayerSide, Position } from "./types";
 
 export function createInitialGameState(): GameState {
   const { board, pieces } = createStartingPosition();
+  const selectedFactions = { ...DEFAULT_SELECTED_FACTIONS };
   return {
     board,
     pieces,
     turn: "Blue",
     turnNumber: 1,
+    selectedFactions,
+    cards: createDefaultCards(selectedFactions),
+    drawState: createDefaultDrawState(),
     log: ["Blue moves first."],
     moveHistory: [],
   };
@@ -47,6 +53,44 @@ export function moveSelectedPiece(state: GameState, to: Position): GameState {
   }
 
   return applyMove(state, state.selectedPieceId, move);
+}
+
+export function applyAdvanceMove(state: GameState, pieceId: string, to: Position): GameState {
+  const activeCard = state.activeMoveCard;
+  const attacker = state.pieces[pieceId];
+  const legal = getAdvanceMoves(state, pieceId).some((move) => move.col === to.col && move.row === to.row);
+  if (!activeCard || !attacker || attacker.side !== activeCard.side || attacker.side !== state.turn || !legal) {
+    return state;
+  }
+
+  const from = getPiecePosition(state.board, pieceId);
+  if (!from) {
+    return state;
+  }
+
+  const boardAfterLeaving = setPieceAt(cloneBoard(state.board), from, undefined);
+  const board = setPieceAt(boardAfterLeaving, to, pieceId);
+  const move: LegalMove = {
+    from,
+    to,
+    kind: "move",
+    classification: {
+      legal: true,
+      kind: "normalMove",
+      from,
+      to,
+      reason: "Advance card move.",
+    },
+  };
+  const record: MoveRecord = {
+    text: `Turn ${state.turnNumber} - ${attacker.side} uses Advance: ${attacker.type} ${coordinateLabel(from)} -> ${coordinateLabel(to)}.`,
+    turnNumber: state.turnNumber,
+    player: state.turn,
+    attacker,
+    move,
+  };
+
+  return completeActiveMoveCard(finishMove(state, board, state.pieces, record));
 }
 
 export function applyMove(state: GameState, pieceId: string, move: LegalMove): GameState {
@@ -133,7 +177,7 @@ function applyDirectCapture(state: GameState, move: LegalMove, attacker: Piece, 
 
 function applyCombatMove(state: GameState, move: LegalMove, attacker: Piece, defender: Piece): GameState {
   const classification = classifyMove(state, attacker.id, move.to);
-  const combat = resolveCombat(attacker, defender, move.to, undefined, state.forcedDice);
+  const combat = resolveCombat(state, attacker, defender, move.to, undefined, state.forcedDice);
   const pieces = { ...state.pieces };
   const boardAfterLeaving = setPieceAt(cloneBoard(state.board), move.from, undefined);
   let board = boardAfterLeaving;
@@ -200,7 +244,8 @@ function finishMove(
     checkedSides: checkedSides.length ? checkedSides : undefined,
   };
 
-  return {
+  const nextState = {
+    ...state,
     board,
     pieces,
     turn: nextTurn,
@@ -212,6 +257,7 @@ function finishMove(
     winner,
     log: [winner ? `${winner} wins by capturing the King.` : recordWithCheck.text, ...state.log],
   };
+  return applyCardDrawTriggersAfterMove(nextState, recordWithCheck);
 }
 
 export function setForcedDice(state: GameState, forcedDice: ForcedDice): GameState {
@@ -267,7 +313,16 @@ function formatCombat(
   const winner = combat.attackerWon ? label(attacker) : label(defender);
   const removed = combat.attackerWon ? label(defender) : label(attacker);
   const forced = combat.forcedDice ? " Forced dice debug mode." : "";
-  return `Turn ${turnNumber} - ${label(attacker)} ${coordinateLabel(move.from)} attacks ${label(defender)} on ${coordinateLabel(move.to)}. Combat: ${getCombatProfileNameForPiece(attacker)} rolls ${combat.attackerValue}, ${getCombatProfileNameForPiece(defender)} rolls ${combat.defenderValue}. Attacker wins ties.${forced} ${winner} wins. ${removed} removed.`;
+  const attackerModifiers = formatCombatModifiers(combat.attackerModifiers);
+  const defenderModifiers = formatCombatModifiers(combat.defenderModifiers);
+  return `Turn ${turnNumber} - ${label(attacker)} ${coordinateLabel(move.from)} attacks ${label(defender)} on ${coordinateLabel(move.to)}. Combat: ${getCombatProfileNameForPiece(attacker)} rolls ${combat.attackerRollIndex + 1} -> profile value ${combat.attackerBaseValue}.${attackerModifiers} Final ${combat.attackerFinalValue}. ${getCombatProfileNameForPiece(defender)} rolls ${combat.defenderRollIndex + 1} -> profile value ${combat.defenderBaseValue}.${defenderModifiers} Final ${combat.defenderFinalValue}. Attacker wins ties.${forced} ${winner} wins. ${removed} removed.`;
+}
+
+function formatCombatModifiers(modifiers: CombatModifier[]): string {
+  if (!modifiers.length) {
+    return "";
+  }
+  return ` ${modifiers.map((modifier) => `${modifier.source} ${modifier.value >= 0 ? "+" : ""}${modifier.value}`).join(". ")}.`;
 }
 
 function wasPromoted(before: Piece, after: Piece): boolean {

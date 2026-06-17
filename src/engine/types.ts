@@ -1,7 +1,33 @@
+import { PlayerCardState } from "./cards/cardTypes";
+
 export const BOARD_SIZE = 7;
 export const FILES = ["A", "B", "C", "D", "E", "F", "G"] as const;
 
 export type PlayerSide = "Blue" | "Red";
+
+export type SelectedFactions = {
+  Blue: string | null;
+  Red: string | null;
+};
+
+export type PlayerDrawState = {
+  passiveDrawsUsed: number;
+  activeDrawsUsed: number;
+  capturedPiecesCount: number;
+  hasDrawnForThreeCaptures: boolean;
+  hasDrawnForFirstFrontierCrossing: boolean;
+  hasDrawnForFirstEnemyHomeEntry: boolean;
+};
+
+export type CardStateBySide = Record<PlayerSide, PlayerCardState>;
+
+export type DrawStateBySide = Record<PlayerSide, PlayerDrawState>;
+
+export type ActiveMoveCard = {
+  side: PlayerSide;
+  cardId: string;
+  cardName: "Advance";
+};
 
 export type PieceType = "King" | "Rook" | "Knight" | "Bishop" | "Cannon" | "Guard" | "Pawn";
 
@@ -66,6 +92,14 @@ export type CombatProfile = {
   dice: readonly number[];
 };
 
+export interface CombatModifier {
+  source: string;
+  side: PlayerSide;
+  pieceId: string;
+  value: number;
+  description: string;
+}
+
 export type CombatResult = {
   attackerId: string;
   defenderId: string;
@@ -73,6 +107,16 @@ export type CombatResult = {
   defenderType: PieceType;
   attackerRollIndex: number;
   defenderRollIndex: number;
+  attackerOriginalRollIndex?: number;
+  defenderOriginalRollIndex?: number;
+  attackerBaseValue: number;
+  defenderBaseValue: number;
+  attackerOriginalBaseValue?: number;
+  defenderOriginalBaseValue?: number;
+  attackerModifiers: CombatModifier[];
+  defenderModifiers: CombatModifier[];
+  attackerFinalValue: number;
+  defenderFinalValue: number;
   attackerValue: number;
   defenderValue: number;
   winner: PlayerSide;
@@ -82,21 +126,31 @@ export type CombatResult = {
   manualRoll?: boolean;
   attackerAutoRolled?: boolean;
   defenderAutoRolled?: boolean;
+  attackerUsedGambit?: boolean;
+  defenderUsedGambit?: boolean;
 };
 
 export type ForcedDice = {
   attackerRollIndex?: number;
   defenderRollIndex?: number;
+  attackerOriginalRollIndex?: number;
+  defenderOriginalRollIndex?: number;
   attackerValue?: number;
   defenderValue?: number;
+  attackerOriginalValue?: number;
+  defenderOriginalValue?: number;
   manualRoll?: boolean;
   attackerAutoRolled?: boolean;
   defenderAutoRolled?: boolean;
+  attackerUsedGambit?: boolean;
+  defenderUsedGambit?: boolean;
 };
 
 export type PendingCombatStatus =
   | "waitingForAttackerRoll"
   | "waitingForDefenderRoll"
+  | "waitingForBothRolls"
+  | "gambitWindow"
   | "revealingResult"
   | "resolved";
 
@@ -115,10 +169,24 @@ export interface PendingCombat {
   defenderProfile: number[];
   attackerDieIndex?: number;
   defenderDieIndex?: number;
+  attackerOriginalDieIndex?: number;
+  defenderOriginalDieIndex?: number;
   attackerProfileValue?: number;
   defenderProfileValue?: number;
+  attackerOriginalProfileValue?: number;
+  defenderOriginalProfileValue?: number;
+  attackerFinalValue?: number;
+  defenderFinalValue?: number;
+  attackerModifiers?: CombatModifier[];
+  defenderModifiers?: CombatModifier[];
   attackerAutoRolled?: boolean;
   defenderAutoRolled?: boolean;
+  attackerUsedGambit?: boolean;
+  defenderUsedGambit?: boolean;
+  attackerPassedGambit?: boolean;
+  defenderPassedGambit?: boolean;
+  gambitWindowStartedAt?: number;
+  gambitWindowDeadlineAt?: number;
   resultRevealedAt?: number;
   resolveAfterAt?: number;
   winnerSide?: PlayerSide;
@@ -152,6 +220,10 @@ export type GameState = {
   pieces: Record<string, Piece>;
   turn: PlayerSide;
   turnNumber: number;
+  selectedFactions: SelectedFactions;
+  cards: CardStateBySide;
+  drawState: DrawStateBySide;
+  activeMoveCard?: ActiveMoveCard;
   selectedPieceId?: string;
   log: string[];
   moveHistory: MoveRecord[];

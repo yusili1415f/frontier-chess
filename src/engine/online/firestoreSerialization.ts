@@ -1,10 +1,13 @@
 import { coordinateLabel, createEmptyBoard, getPiecePosition, setPieceAt } from "../board";
+import { DEFAULT_SELECTED_FACTIONS } from "../../data/factions/testFactions";
+import { DEFAULT_HAND_LIMIT, getCardById, normalizeCardState } from "../cards/cardEngine";
 import { GameState, MoveClassificationKind, MoveRecord, PendingCombat, Piece, PlayerSide, Position } from "../types";
 import {
   FirestoreGameState,
   FirestoreMoveHistoryEntry,
   FirestorePendingCombat,
   FirestorePiece,
+  FirestorePlayerCardState,
   OnlineGameDocument,
   OnlineGameViewDocument,
 } from "./onlineTypes";
@@ -15,6 +18,19 @@ export function serializeGameStateForFirestore(gameState: GameState): FirestoreG
   return {
     turn: gameState.turn,
     turnNumber: gameState.turnNumber,
+    selectedFactions: {
+      Blue: gameState.selectedFactions.Blue,
+      Red: gameState.selectedFactions.Red,
+    },
+    cards: {
+      Blue: serializePlayerCardsForFirestore(gameState.cards.Blue),
+      Red: serializePlayerCardsForFirestore(gameState.cards.Red),
+    },
+    drawState: {
+      Blue: { ...gameState.drawState.Blue },
+      Red: { ...gameState.drawState.Red },
+    },
+    activeMoveCard: gameState.activeMoveCard ?? null,
     selectedPieceId: gameState.selectedPieceId ?? null,
     pieces: Object.values(gameState.pieces)
       .map((piece) => serializePiece(gameState, piece))
@@ -52,12 +68,27 @@ export function deserializeGameStateFromFirestore(data: FirestoreGameState): Gam
   });
 
   const moveHistory = data.moveHistory.map(deserializeMoveRecordFromFirestore);
+  const selectedFactions = normalizeSelectedFactions(data.selectedFactions);
+  const normalizedCards = normalizeCardState(
+    selectedFactions,
+    data.cards
+      ? {
+          Blue: deserializePlayerCardsFromFirestore(data.cards.Blue),
+          Red: deserializePlayerCardsFromFirestore(data.cards.Red),
+        }
+      : undefined,
+    data.drawState ?? undefined,
+  );
 
   return {
     board,
     pieces,
     turn: data.turn,
     turnNumber: data.turnNumber,
+    selectedFactions,
+    cards: normalizedCards.cards,
+    drawState: normalizedCards.drawState,
+    activeMoveCard: data.activeMoveCard ?? undefined,
     selectedPieceId: data.selectedPieceId ?? undefined,
     log: data.log ?? [],
     moveHistory,
@@ -71,6 +102,31 @@ export function deserializeGameStateFromFirestore(data: FirestoreGameState): Gam
         }
       : undefined,
     winner: data.winner ?? undefined,
+  };
+}
+
+function normalizeSelectedFactions(selectedFactions: FirestoreGameState["selectedFactions"]): GameState["selectedFactions"] {
+  return {
+    Blue: selectedFactions?.Blue ?? DEFAULT_SELECTED_FACTIONS.Blue,
+    Red: selectedFactions?.Red ?? DEFAULT_SELECTED_FACTIONS.Red,
+  };
+}
+
+function serializePlayerCardsForFirestore(cards: GameState["cards"][PlayerSide]): FirestorePlayerCardState {
+  return {
+    deckIds: cards.deck.map((card) => card.id),
+    handIds: cards.hand.map((card) => card.id),
+    discardIds: cards.discard.map((card) => card.id),
+    handLimit: cards.handLimit,
+  };
+}
+
+function deserializePlayerCardsFromFirestore(cards: FirestorePlayerCardState): GameState["cards"][PlayerSide] {
+  return {
+    deck: cards.deckIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
+    hand: cards.handIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
+    discard: cards.discardIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
+    handLimit: cards.handLimit ?? DEFAULT_HAND_LIMIT,
   };
 }
 
@@ -147,11 +203,23 @@ function serializeMoveRecordForFirestore(record: MoveRecord): FirestoreMoveHisto
     targetPieceSide: record.defender?.side ?? null,
     combatAttackerValue: record.combat?.attackerValue ?? null,
     combatDefenderValue: record.combat?.defenderValue ?? null,
+    combatAttackerBaseValue: record.combat?.attackerBaseValue ?? record.combat?.attackerValue ?? null,
+    combatDefenderBaseValue: record.combat?.defenderBaseValue ?? record.combat?.defenderValue ?? null,
+    combatAttackerOriginalRollIndex: record.combat?.attackerOriginalRollIndex ?? null,
+    combatDefenderOriginalRollIndex: record.combat?.defenderOriginalRollIndex ?? null,
+    combatAttackerOriginalBaseValue: record.combat?.attackerOriginalBaseValue ?? null,
+    combatDefenderOriginalBaseValue: record.combat?.defenderOriginalBaseValue ?? null,
+    combatAttackerFinalValue: record.combat?.attackerFinalValue ?? record.combat?.attackerValue ?? null,
+    combatDefenderFinalValue: record.combat?.defenderFinalValue ?? record.combat?.defenderValue ?? null,
+    combatAttackerModifiers: record.combat?.attackerModifiers ?? [],
+    combatDefenderModifiers: record.combat?.defenderModifiers ?? [],
     combatWinner: record.combat?.winner ?? null,
     combatAttackerWon: record.combat?.attackerWon ?? null,
     combatManualRoll: record.combat?.manualRoll ?? null,
     combatAttackerAutoRolled: record.combat?.attackerAutoRolled ?? null,
     combatDefenderAutoRolled: record.combat?.defenderAutoRolled ?? null,
+    combatAttackerUsedGambit: record.combat?.attackerUsedGambit ?? null,
+    combatDefenderUsedGambit: record.combat?.defenderUsedGambit ?? null,
     promotedPieceId: record.promotedPiece?.id ?? null,
     promotionProfileName: record.promotionProfileName ?? null,
     cannonScreenSquares: record.cannon?.screenSquares.map(coordinateLabel) ?? [],
@@ -176,10 +244,24 @@ export function serializePendingCombatForFirestore(pendingCombat: PendingCombat)
     defenderProfile: pendingCombat.defenderProfile,
     attackerDieIndex: pendingCombat.attackerDieIndex ?? null,
     defenderDieIndex: pendingCombat.defenderDieIndex ?? null,
+    attackerOriginalDieIndex: pendingCombat.attackerOriginalDieIndex ?? null,
+    defenderOriginalDieIndex: pendingCombat.defenderOriginalDieIndex ?? null,
     attackerProfileValue: pendingCombat.attackerProfileValue ?? null,
     defenderProfileValue: pendingCombat.defenderProfileValue ?? null,
+    attackerOriginalProfileValue: pendingCombat.attackerOriginalProfileValue ?? null,
+    defenderOriginalProfileValue: pendingCombat.defenderOriginalProfileValue ?? null,
+    attackerFinalValue: pendingCombat.attackerFinalValue ?? null,
+    defenderFinalValue: pendingCombat.defenderFinalValue ?? null,
+    attackerModifiers: pendingCombat.attackerModifiers ?? [],
+    defenderModifiers: pendingCombat.defenderModifiers ?? [],
     attackerAutoRolled: pendingCombat.attackerAutoRolled ?? null,
     defenderAutoRolled: pendingCombat.defenderAutoRolled ?? null,
+    attackerUsedGambit: pendingCombat.attackerUsedGambit ?? null,
+    defenderUsedGambit: pendingCombat.defenderUsedGambit ?? null,
+    attackerPassedGambit: pendingCombat.attackerPassedGambit ?? null,
+    defenderPassedGambit: pendingCombat.defenderPassedGambit ?? null,
+    gambitWindowStartedAt: pendingCombat.gambitWindowStartedAt ?? null,
+    gambitWindowDeadlineAt: pendingCombat.gambitWindowDeadlineAt ?? null,
     resultRevealedAt: pendingCombat.resultRevealedAt ?? null,
     resolveAfterAt: pendingCombat.resolveAfterAt ?? null,
     winnerSide: pendingCombat.winnerSide ?? null,
@@ -207,10 +289,24 @@ export function deserializePendingCombatFromFirestore(entry: FirestorePendingCom
     defenderProfile: entry.defenderProfile,
     attackerDieIndex: entry.attackerDieIndex ?? undefined,
     defenderDieIndex: entry.defenderDieIndex ?? undefined,
+    attackerOriginalDieIndex: entry.attackerOriginalDieIndex ?? undefined,
+    defenderOriginalDieIndex: entry.defenderOriginalDieIndex ?? undefined,
     attackerProfileValue: entry.attackerProfileValue ?? undefined,
     defenderProfileValue: entry.defenderProfileValue ?? undefined,
+    attackerOriginalProfileValue: entry.attackerOriginalProfileValue ?? undefined,
+    defenderOriginalProfileValue: entry.defenderOriginalProfileValue ?? undefined,
+    attackerFinalValue: entry.attackerFinalValue ?? undefined,
+    defenderFinalValue: entry.defenderFinalValue ?? undefined,
+    attackerModifiers: entry.attackerModifiers ?? [],
+    defenderModifiers: entry.defenderModifiers ?? [],
     attackerAutoRolled: entry.attackerAutoRolled ?? undefined,
     defenderAutoRolled: entry.defenderAutoRolled ?? undefined,
+    attackerUsedGambit: entry.attackerUsedGambit ?? undefined,
+    defenderUsedGambit: entry.defenderUsedGambit ?? undefined,
+    attackerPassedGambit: entry.attackerPassedGambit ?? undefined,
+    defenderPassedGambit: entry.defenderPassedGambit ?? undefined,
+    gambitWindowStartedAt: entry.gambitWindowStartedAt ?? undefined,
+    gambitWindowDeadlineAt: entry.gambitWindowDeadlineAt ?? undefined,
     resultRevealedAt: entry.resultRevealedAt ?? undefined,
     resolveAfterAt: entry.resolveAfterAt ?? undefined,
     winnerSide: entry.winnerSide ?? undefined,
@@ -252,14 +348,26 @@ function deserializeMoveRecordFromFirestore(entry: FirestoreMoveHistoryEntry): M
         defenderType: defender.type,
         attackerRollIndex: 0,
         defenderRollIndex: 0,
-        attackerValue: entry.combatAttackerValue ?? 0,
-        defenderValue: entry.combatDefenderValue ?? 0,
+        attackerOriginalRollIndex: entry.combatAttackerOriginalRollIndex ?? undefined,
+        defenderOriginalRollIndex: entry.combatDefenderOriginalRollIndex ?? undefined,
+        attackerBaseValue: entry.combatAttackerBaseValue ?? entry.combatAttackerValue ?? 0,
+        defenderBaseValue: entry.combatDefenderBaseValue ?? entry.combatDefenderValue ?? 0,
+        attackerOriginalBaseValue: entry.combatAttackerOriginalBaseValue ?? undefined,
+        defenderOriginalBaseValue: entry.combatDefenderOriginalBaseValue ?? undefined,
+        attackerModifiers: entry.combatAttackerModifiers ?? [],
+        defenderModifiers: entry.combatDefenderModifiers ?? [],
+        attackerFinalValue: entry.combatAttackerFinalValue ?? entry.combatAttackerValue ?? 0,
+        defenderFinalValue: entry.combatDefenderFinalValue ?? entry.combatDefenderValue ?? 0,
+        attackerValue: entry.combatAttackerFinalValue ?? entry.combatAttackerValue ?? 0,
+        defenderValue: entry.combatDefenderFinalValue ?? entry.combatDefenderValue ?? 0,
         winner: entry.combatWinner,
         attackerWon: entry.combatAttackerWon ?? entry.combatWinner === attacker.side,
         target: to,
         manualRoll: entry.combatManualRoll || undefined,
         attackerAutoRolled: entry.combatAttackerAutoRolled || undefined,
         defenderAutoRolled: entry.combatDefenderAutoRolled || undefined,
+        attackerUsedGambit: entry.combatAttackerUsedGambit || undefined,
+        defenderUsedGambit: entry.combatDefenderUsedGambit || undefined,
       }
     : undefined;
 

@@ -1,7 +1,7 @@
 import { createEmptyBoard, getPiecePosition, isFrontierLine, isFrontierZone, setPieceAt } from "./board";
 import { shouldCannonCaptureUseCombat, shouldTriggerCombat, resolveCombat } from "./combat";
 import { getCombatProfileForPiece, getPieceAbbreviation, getPieceDisplayLabel, getPieceIconPath } from "./data/classProfiles";
-import { applyMove, createInitialGameState } from "./gameState";
+import { applyAdvanceMove, applyMove, createInitialGameState } from "./gameState";
 import { countInterveningPieces, getLegalMove, getLegalMovesForPiece } from "./movement";
 import { classifyMove } from "./movement";
 import { applyPromotionIfNeeded } from "./promotion";
@@ -18,17 +18,35 @@ import { deriveLastMoveHighlight } from "./lastMoveHighlight";
 import {
   autoRollExpiredPendingCombat,
   createPendingCombat,
+  getPendingCombatWinner,
+  passPendingCombatGambit,
   pendingCombatToForcedDice,
+  playPendingCombatGambit,
   rollPendingCombatSide,
 } from "./pendingCombat";
 import { createReplaySnapshots } from "./replay";
 import {
+  deserializePendingCombatFromFirestore,
   deserializeGameStateFromFirestore,
   hasNestedArray,
+  serializePendingCombatForFirestore,
   serializeGameStateForFirestore,
 } from "./online/firestoreSerialization";
 import { OnlineGameDocument } from "./online/onlineTypes";
 import { startOnlineRematchIfBothAccepted } from "../services/onlineGameService";
+import { DEFAULT_SELECTED_FACTIONS, TEST_FACTIONS } from "../data/factions/testFactions";
+import {
+  buildStartingDeck,
+  canDrawCard,
+  createDefaultCards,
+  createDefaultDrawState,
+  drawCard,
+  drawCards,
+  getAdvanceMoves,
+  playCard,
+} from "./cards/cardEngine";
+import { applyAfterCombatFactionEffects, applyAfterMoveFactionEffects, applyBeforeCombatFactionEffects, FACTION_HOOKS_NO_EFFECT_MESSAGE, getFactionCardsForTiming } from "./factions/factionEngine";
+import { FactionCardType } from "./factions/factionTypes";
 import { GameState, LegalMove, Piece, Position } from "./types";
 
 type ValidationResult = {
@@ -169,6 +187,47 @@ export function runRuleValidation(): ValidationResult {
     ["Manual combat roll preserves attacker-wins-ties", validatesManualRollAttackerWinsTies],
     ["Manual combat timeout auto-rolls missing dice", validatesManualRollTimeoutAutoRoll],
     ["Automatic combat mode still resolves without manual flag", validatesAutomaticCombatUnchanged],
+    ["Four test factions exist", validatesFourTestFactions],
+    ["Each test faction has exactly five cards", validatesFactionCardCounts],
+    ["Each test faction has two Banners, two Orders, and one Relic", validatesFactionCardTypes],
+    ["Only Dragon Standard is implemented", validatesOnlyDragonStandardImplemented],
+    ["Initial game state stores default selected faction IDs", validatesDefaultSelectedFactions],
+    ["Faction selections serialize for online game state", validatesFactionSelectionsSerialize],
+    ["Missing online faction selections load with safe defaults", validatesMissingFactionSelectionsDefault],
+    ["Faction hooks do not mutate context", validatesFactionHooksNoOp],
+    ["Faction card timing lookup reads selected faction data only", validatesFactionCardsForTiming],
+    ["Selecting factions does not change movement", validatesFactionSelectionDoesNotChangeMovement],
+    ["Dragon Banner Army attacking into Frontier Zone gets +1", validatesDragonStandardAttackerFrontierBonus],
+    ["Dragon Banner Army defending does not get +1", validatesDragonStandardDoesNotHelpDefender],
+    ["Dragon Banner Army attacking outside Frontier Zone does not get +1", validatesDragonStandardOutsideFrontierNoBonus],
+    ["Non-Dragon factions do not get Dragon Standard bonus", validatesNonDragonFactionNoDragonBonus],
+    ["Dragon Standard modifier can change combat winner", validatesDragonStandardCanChangeWinner],
+    ["Attacker still wins ties after faction modifiers", validatesFactionModifiedTieAttackerWins],
+    ["Manual combat stores Dragon Standard base modifier and final values", validatesManualDragonStandardPendingCombat],
+    ["Online combat serialization preserves Dragon Standard modifier", validatesOnlineDragonStandardModifierSerialization],
+    ["Each player starts with a seven-card deck", validatesStartingDeckSize],
+    ["Card hand limit is two", validatesCardHandLimit],
+    ["Drawing moves top deck card to hand", validatesCardDrawMovesDeckToHand],
+    ["Drawing does nothing when hand is full", validatesCardDrawHandFull],
+    ["Captured pieces count increments for losing side", validatesCapturedPiecesCount],
+    ["Three captured pieces trigger one passive draw", validatesThreeCaptureDrawOnce],
+    ["Bishop captured discards hand and draws one", validatesBishopCapturedDraw],
+    ["First Frontier Line crossing draws once", validatesFirstFrontierCrossingDraw],
+    ["First enemy home entry draws once", validatesFirstEnemyHomeEntryDraw],
+    ["Active draw triggers do not repeat", validatesActiveDrawsDoNotRepeat],
+    ["Passive draw limit is respected", validatesPassiveDrawLimit],
+    ["Online card state serializes as card IDs", validatesOnlineCardStateSerialization],
+    ["Missing online card state loads safely", validatesMissingCardStateDefaults],
+    ["Unimplemented cards cannot be played", validatesUnimplementedCardsCannotBePlayed],
+    ["Advance works only for Pawn or Guard", validatesAdvancePieceRestriction],
+    ["Advance moves exactly two straight forward squares", validatesAdvanceMovesTwoForward],
+    ["Advance cannot capture or jump", validatesAdvanceCannotCaptureOrJump],
+    ["Advance moves to discard only after successful move", validatesAdvanceDiscardAfterMove],
+    ["Cancel Advance keeps card in hand", validatesAdvanceCancelKeepsCard],
+    ["Gambit opens after both dice when a player has Gambit", validatesGambitWindowOpens],
+    ["Gambit rerolls own die and can change winner", validatesGambitRerollChangesWinner],
+    ["Gambit can be used at most once per side", validatesGambitOnlyOnce],
+    ["Passing Gambit can close the window", validatesGambitPassClosesWindow],
   ];
 
   const messages = checks.map(([name, run]) => `${run() ? "PASS" : "FAIL"}: ${name}`);
@@ -233,7 +292,7 @@ function validatesCombatTrigger(): boolean {
 function validatesAttackerWinsTies(): boolean {
   const attacker: Piece = { id: "Blue-King", side: "Blue", type: "King" };
   const defender: Piece = { id: "Red-King", side: "Red", type: "King" };
-  const result = resolveCombat(attacker, defender, { col: 3, row: 4 }, () => 0);
+  const result = resolveCombat(createInitialGameState(), attacker, defender, { col: 3, row: 4 }, () => 0);
   return result.attackerWon && result.winner === "Blue";
 }
 
@@ -569,7 +628,7 @@ function validatesClassifyMovePromotion(): boolean {
 function validatesCombatUsesFrontierProfiles(): boolean {
   const attacker: Piece = { id: "attacker", side: "Blue", type: "Guard", promoted: true };
   const defender: Piece = { id: "defender", side: "Red", type: "Pawn", promoted: true };
-  const result = resolveCombat(attacker, defender, { col: 3, row: 4 }, () => 0);
+  const result = resolveCombat(createInitialGameState(), attacker, defender, { col: 3, row: 4 }, () => 0);
   return result.attackerValue === 2 && result.defenderValue === 1;
 }
 
@@ -1400,6 +1459,635 @@ function validatesAutomaticCombatUnchanged(): boolean {
     pieceAt(after, { col: 4, row: 5 })?.id === "attacker";
 }
 
+function validatesFourTestFactions(): boolean {
+  return TEST_FACTIONS.length === 4;
+}
+
+function validatesFactionCardCounts(): boolean {
+  return TEST_FACTIONS.every((faction) => faction.cards.length === 5);
+}
+
+function validatesFactionCardTypes(): boolean {
+  return TEST_FACTIONS.every((faction) =>
+    faction.cards.filter((card) => card.type === "Banner").length === 2 &&
+    faction.cards.filter((card) => card.type === "Order").length === 2 &&
+    faction.cards.filter((card) => card.type === "Relic").length === 1
+  );
+}
+
+function validatesOnlyDragonStandardImplemented(): boolean {
+  return TEST_FACTIONS.every((faction) =>
+    faction.cards.every((card) => card.implemented === (faction.id === "dragon_banner_army" && card.id === "dragon_banner"))
+  );
+}
+
+function validatesDefaultSelectedFactions(): boolean {
+  const state = createInitialGameState();
+  return state.selectedFactions.Blue === DEFAULT_SELECTED_FACTIONS.Blue &&
+    state.selectedFactions.Red === DEFAULT_SELECTED_FACTIONS.Red;
+}
+
+function validatesFactionSelectionsSerialize(): boolean {
+  const state: GameState = {
+    ...createInitialGameState(),
+    selectedFactions: {
+      Blue: "sakura_shogunate",
+      Red: "bone_legion",
+    },
+  };
+  const serialized = serializeGameStateForFirestore(state);
+  const restored = deserializeGameStateFromFirestore(serialized);
+  return serialized.selectedFactions?.Blue === "sakura_shogunate" &&
+    serialized.selectedFactions.Red === "bone_legion" &&
+    restored.selectedFactions.Blue === "sakura_shogunate" &&
+    restored.selectedFactions.Red === "bone_legion";
+}
+
+function validatesMissingFactionSelectionsDefault(): boolean {
+  const serialized = serializeGameStateForFirestore(createInitialGameState());
+  const restored = deserializeGameStateFromFirestore({
+    ...serialized,
+    selectedFactions: undefined,
+  });
+  return restored.selectedFactions.Blue === DEFAULT_SELECTED_FACTIONS.Blue &&
+    restored.selectedFactions.Red === DEFAULT_SELECTED_FACTIONS.Red;
+}
+
+function validatesFactionHooksNoOp(): boolean {
+  const context = {
+    combatValue: 5,
+    debugText: undefined,
+    nested: { unchanged: true },
+  };
+  const combatState: GameState = {
+    ...createInitialGameState(),
+    selectedFactions: {
+      Blue: "sakura_shogunate",
+      Red: "iron_crown_cavalry",
+    },
+  };
+  const before = applyBeforeCombatFactionEffects({
+    attacker: bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+    defender: redPiece("defender", { col: 4, row: 5 }),
+    attackerModifiers: [],
+    defenderModifiers: [],
+    debugText: undefined,
+    gameState: combatState,
+    target: { col: 4, row: 5 },
+  });
+  const afterCombat = applyAfterCombatFactionEffects(context);
+  const afterMove = applyAfterMoveFactionEffects(context);
+  return before.attackerModifiers.length === 0 &&
+    before.debugText === FACTION_HOOKS_NO_EFFECT_MESSAGE &&
+    afterCombat.combatValue === context.combatValue &&
+    afterMove.combatValue === context.combatValue;
+}
+
+function validatesFactionCardsForTiming(): boolean {
+  const state: GameState = {
+    ...createInitialGameState(),
+    selectedFactions: {
+      Blue: "sakura_shogunate",
+      Red: "bone_legion",
+    },
+  };
+  const blueCards = getFactionCardsForTiming(state, "Blue", "afterEnemyMove");
+  const redCards = getFactionCardsForTiming(state, "Red", "afterCapture");
+  return blueCards.length === 1 &&
+    blueCards[0].id === "sakura_order" &&
+    redCards.length === 1 &&
+    redCards[0].id === "bone_legion_order";
+}
+
+function validatesFactionSelectionDoesNotChangeMovement(): boolean {
+  const coreState = createInitialGameState();
+  const factionState: GameState = {
+    ...coreState,
+    selectedFactions: {
+      Blue: "bone_legion",
+      Red: "sakura_shogunate",
+    },
+  };
+  const coreMoves = getLegalMovesForPiece(coreState, "Blue-Pawn-7").map((move) => coordinateKey(move.to)).sort();
+  const factionMoves = getLegalMovesForPiece(factionState, "Blue-Pawn-7").map((move) => coordinateKey(move.to)).sort();
+  return JSON.stringify(coreMoves) === JSON.stringify(factionMoves);
+}
+
+function validatesFactionSelectionDoesNotChangeCombat(): boolean {
+  const coreState = customState([
+    bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+    redPiece("defender", { col: 4, row: 5 }),
+  ]);
+  const factionState: GameState = {
+    ...coreState,
+    selectedFactions: {
+      Blue: "bone_legion",
+      Red: "sakura_shogunate",
+    },
+  };
+  const coreMove = getLegalMove(coreState, "attacker", { col: 4, row: 5 });
+  const factionMove = getLegalMove(factionState, "attacker", { col: 4, row: 5 });
+  if (!coreMove || !factionMove) {
+    return false;
+  }
+
+  const coreAfter = applyMove({ ...coreState, forcedDice: { attackerValue: 6, defenderValue: 1 } }, "attacker", coreMove);
+  const factionAfter = applyMove({ ...factionState, forcedDice: { attackerValue: 6, defenderValue: 1 } }, "attacker", factionMove);
+  return coreAfter.lastMove?.combat?.winner === factionAfter.lastMove?.combat?.winner &&
+    coreAfter.lastMove?.combat?.attackerValue === factionAfter.lastMove?.combat?.attackerValue &&
+    coreAfter.lastMove?.combat?.defenderValue === factionAfter.lastMove?.combat?.defenderValue &&
+    pieceAt(coreAfter, { col: 4, row: 5 })?.id === pieceAt(factionAfter, { col: 4, row: 5 })?.id;
+}
+
+function validatesDragonStandardAttackerFrontierBonus(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    redPiece("defender", { col: 3, row: 3 }),
+  ]);
+  const move = getLegalMove(state, "attacker", { col: 3, row: 3 });
+  if (!move) {
+    return false;
+  }
+
+  const after = applyMove({ ...state, forcedDice: { attackerValue: 3, defenderValue: 6 } }, "attacker", move);
+  return after.lastMove?.combat?.attackerBaseValue === 3 &&
+    after.lastMove.combat.attackerModifiers.length === 1 &&
+    after.lastMove.combat.attackerModifiers[0].source === "Dragon Standard" &&
+    after.lastMove.combat.attackerFinalValue === 4;
+}
+
+function validatesDragonStandardDoesNotHelpDefender(): boolean {
+  const state = {
+    ...customState([
+      { id: "attacker", side: "Red", type: "Rook", position: { col: 3, row: 6 } },
+      bluePiece("defender", "Pawn", { col: 3, row: 5 }),
+    ], "Red"),
+    selectedFactions: {
+      Blue: "dragon_banner_army",
+      Red: "iron_crown_cavalry",
+    },
+  };
+  const move = getLegalMove(state, "attacker", { col: 3, row: 5 });
+  if (!move) {
+    return false;
+  }
+
+  const after = applyMove({ ...state, forcedDice: { attackerValue: 3, defenderValue: 3 } }, "attacker", move);
+  return after.lastMove?.combat?.attackerModifiers.length === 0 &&
+    after.lastMove?.combat?.defenderModifiers.length === 0 &&
+    after.lastMove?.combat?.defenderFinalValue === 3;
+}
+
+function validatesDragonStandardOutsideFrontierNoBonus(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    redPiece("defender", { col: 3, row: 6 }),
+  ]);
+  const result = resolveCombat(state, state.pieces.attacker, state.pieces.defender, { col: 3, row: 6 }, () => 0, {
+    attackerValue: 3,
+    defenderValue: 2,
+  });
+  return result.attackerModifiers.length === 0 && result.attackerFinalValue === 3;
+}
+
+function validatesNonDragonFactionNoDragonBonus(): boolean {
+  const state = {
+    ...customState([
+      bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+      redPiece("defender", { col: 3, row: 3 }),
+    ]),
+    selectedFactions: {
+      Blue: "sakura_shogunate",
+      Red: "iron_crown_cavalry",
+    },
+  };
+  const result = resolveCombat(state, state.pieces.attacker, state.pieces.defender, { col: 3, row: 3 }, () => 0, {
+    attackerValue: 3,
+    defenderValue: 2,
+  });
+  return result.attackerModifiers.length === 0 && result.attackerFinalValue === 3;
+}
+
+function validatesDragonStandardCanChangeWinner(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    redPiece("defender", { col: 3, row: 3 }),
+  ]);
+  const result = resolveCombat(state, state.pieces.attacker, state.pieces.defender, { col: 3, row: 3 }, () => 0, {
+    attackerValue: 3,
+    defenderValue: 4,
+  });
+  return result.attackerBaseValue === 3 &&
+    result.attackerFinalValue === 4 &&
+    result.defenderFinalValue === 4 &&
+    result.attackerWon === true;
+}
+
+function validatesFactionModifiedTieAttackerWins(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    redPiece("defender", { col: 3, row: 3 }),
+  ]);
+  const result = resolveCombat(state, state.pieces.attacker, state.pieces.defender, { col: 3, row: 3 }, () => 0, {
+    attackerValue: 2,
+    defenderValue: 3,
+  });
+  return result.attackerFinalValue === result.defenderFinalValue &&
+    result.attackerWon &&
+    result.winner === "Blue";
+}
+
+function validatesManualDragonStandardPendingCombat(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    redPiece("defender", { col: 3, row: 3 }),
+  ]);
+  const move = getLegalMove(state, "attacker", { col: 3, row: 3 });
+  if (!move) {
+    return false;
+  }
+
+  const pending = createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100);
+  const attackerRolled = rollPendingCombatSide(pending, "Blue", { dieIndex: 0 });
+  const defenderRolled = rollPendingCombatSide(attackerRolled, "Red", { dieIndex: 0 });
+  return defenderRolled.attackerProfileValue === defenderRolled.attackerProfile[0] &&
+    defenderRolled.attackerModifiers?.[0]?.source === "Dragon Standard" &&
+    defenderRolled.attackerFinalValue === (defenderRolled.attackerProfileValue ?? 0) + 1 &&
+    getPendingCombatWinner(defenderRolled) === "Blue";
+}
+
+function validatesOnlineDragonStandardModifierSerialization(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    redPiece("defender", { col: 3, row: 3 }),
+  ]);
+  const move = getLegalMove(state, "attacker", { col: 3, row: 3 });
+  if (!move) {
+    return false;
+  }
+
+  const pending = rollPendingCombatSide(
+    rollPendingCombatSide(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), "Blue", { dieIndex: 0 }),
+    "Red",
+    { dieIndex: 0 },
+  );
+  const restoredPending = deserializePendingCombatFromFirestore(serializePendingCombatForFirestore(pending));
+  const combat = applyMove({ ...state, forcedDice: pendingCombatToForcedDice(restoredPending) }, "attacker", move).lastMove?.combat;
+  const restoredState = deserializeGameStateFromFirestore(serializeGameStateForFirestore({
+    ...state,
+    moveHistory: combat ? [{
+      text: "test",
+      turnNumber: 1,
+      player: "Blue",
+      attacker: state.pieces.attacker,
+      defender: state.pieces.defender,
+      move,
+      combat,
+      captureType: "Combat",
+      capturedPieceId: "defender",
+      removedPiece: state.pieces.defender,
+    }] : [],
+  }));
+  const restoredCombat = restoredState.moveHistory[0]?.combat;
+  return restoredPending.attackerModifiers?.[0]?.source === "Dragon Standard" &&
+    restoredPending.attackerFinalValue === (restoredPending.attackerProfileValue ?? 0) + 1 &&
+    restoredCombat?.attackerModifiers[0]?.source === "Dragon Standard" &&
+    restoredCombat.attackerFinalValue === combat?.attackerFinalValue;
+}
+
+function validatesStartingDeckSize(): boolean {
+  const state = createInitialGameState();
+  return state.cards.Blue.deck.length === 7 &&
+    state.cards.Red.deck.length === 7 &&
+    buildStartingDeck("dragon_banner_army").length === 7;
+}
+
+function validatesCardHandLimit(): boolean {
+  const state = createInitialGameState();
+  return state.cards.Blue.handLimit === 2 && state.cards.Red.handLimit === 2;
+}
+
+function validatesCardDrawMovesDeckToHand(): boolean {
+  const state = createInitialGameState();
+  const topCard = state.cards.Blue.deck[0];
+  const after = drawCard(state, "Blue");
+  return after.cards.Blue.deck.length === 6 &&
+    after.cards.Blue.hand.length === 1 &&
+    after.cards.Blue.hand[0].id === topCard.id &&
+    after.log[0] === `Blue draws 1 card: ${topCard.name}.`;
+}
+
+function validatesCardDrawHandFull(): boolean {
+  const fullHand = drawCards(createInitialGameState(), "Blue", 2);
+  const after = drawCard(fullHand, "Blue");
+  return after.cards.Blue.hand.length === 2 &&
+    after.cards.Blue.deck.length === fullHand.cards.Blue.deck.length &&
+    after.log[0] === "Blue hand full. Draw skipped.";
+}
+
+function validatesCapturedPiecesCount(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Rook", { col: 0, row: 1 }),
+    redPiece("defender", { col: 0, row: 6 }),
+  ]);
+  const move = getLegalMove(state, "attacker", { col: 0, row: 6 });
+  if (!move) {
+    return false;
+  }
+  const after = applyMove(state, "attacker", move);
+  return after.drawState.Red.capturedPiecesCount === 1;
+}
+
+function validatesThreeCaptureDrawOnce(): boolean {
+  const state = {
+    ...customState([
+      bluePiece("attacker", "Rook", { col: 0, row: 1 }),
+      redPiece("defender", { col: 0, row: 6 }),
+    ]),
+    drawState: {
+      ...createDefaultDrawState(),
+      Red: {
+        ...createDefaultDrawState().Red,
+        capturedPiecesCount: 2,
+      },
+    },
+  };
+  const move = getLegalMove(state, "attacker", { col: 0, row: 6 });
+  if (!move) {
+    return false;
+  }
+  const after = applyMove(state, "attacker", move);
+  const repeatedState = {
+    ...state,
+    drawState: {
+      ...state.drawState,
+      Red: {
+        ...state.drawState.Red,
+        capturedPiecesCount: 3,
+        hasDrawnForThreeCaptures: true,
+      },
+    },
+  };
+  const repeated = applyMove(repeatedState, "attacker", move);
+  return after.drawState.Red.capturedPiecesCount === 3 &&
+    after.drawState.Red.hasDrawnForThreeCaptures &&
+    after.drawState.Red.passiveDrawsUsed === 1 &&
+    after.cards.Red.hand.length === 1 &&
+    repeated.cards.Red.hand.length === 0;
+}
+
+function validatesBishopCapturedDraw(): boolean {
+  const base = drawCards(customState([
+    { id: "attacker", side: "Red", type: "Rook", position: { col: 2, row: 7 } },
+    bluePiece("defender", "Bishop", { col: 2, row: 2 }),
+  ], "Red"), "Blue", 2);
+  const move = getLegalMove(base, "attacker", { col: 2, row: 2 });
+  if (!move) {
+    return false;
+  }
+  const after = applyMove(base, "attacker", move);
+  return after.drawState.Blue.capturedPiecesCount === 1 &&
+    after.drawState.Blue.passiveDrawsUsed === 1 &&
+    after.cards.Blue.hand.length === 1 &&
+    after.cards.Blue.discard.length === 2 &&
+    after.log.some((entry) => entry.includes("Blue Bishop captured"));
+}
+
+function validatesFirstFrontierCrossingDraw(): boolean {
+  const state = customState([bluePiece("attacker", "Pawn", { col: 3, row: 4 })]);
+  const move = getLegalMove(state, "attacker", { col: 3, row: 5 });
+  if (!move) {
+    return false;
+  }
+  const after = applyMove(state, "attacker", move);
+  return after.drawState.Blue.hasDrawnForFirstFrontierCrossing &&
+    after.drawState.Blue.activeDrawsUsed === 1 &&
+    after.cards.Blue.hand.length === 1;
+}
+
+function validatesFirstEnemyHomeEntryDraw(): boolean {
+  const state = customState([bluePiece("attacker", "Rook", { col: 0, row: 5 })]);
+  const move = getLegalMove(state, "attacker", { col: 0, row: 6 });
+  if (!move) {
+    return false;
+  }
+  const after = applyMove(state, "attacker", move);
+  return after.drawState.Blue.hasDrawnForFirstEnemyHomeEntry &&
+    after.drawState.Blue.activeDrawsUsed === 1 &&
+    after.cards.Blue.hand.length === 1;
+}
+
+function validatesActiveDrawsDoNotRepeat(): boolean {
+  const state = {
+    ...customState([bluePiece("attacker", "Pawn", { col: 3, row: 4 })]),
+    drawState: {
+      ...createDefaultDrawState(),
+      Blue: {
+        ...createDefaultDrawState().Blue,
+        hasDrawnForFirstFrontierCrossing: true,
+      },
+    },
+  };
+  const move = getLegalMove(state, "attacker", { col: 3, row: 5 });
+  if (!move) {
+    return false;
+  }
+  const after = applyMove(state, "attacker", move);
+  return after.drawState.Blue.activeDrawsUsed === 0 && after.cards.Blue.hand.length === 0;
+}
+
+function validatesPassiveDrawLimit(): boolean {
+  const state = {
+    ...customState([
+      { id: "attacker", side: "Red", type: "Rook", position: { col: 0, row: 7 } },
+      bluePiece("defender", "Pawn", { col: 0, row: 2 }),
+    ], "Red"),
+    drawState: {
+      ...createDefaultDrawState(),
+      Blue: {
+        ...createDefaultDrawState().Blue,
+        capturedPiecesCount: 2,
+        passiveDrawsUsed: 5,
+      },
+    },
+  };
+  const move = getLegalMove(state, "attacker", { col: 0, row: 2 });
+  if (!move) {
+    return false;
+  }
+  const after = applyMove(state, "attacker", move);
+  return after.cards.Blue.hand.length === 0 &&
+    after.drawState.Blue.hasDrawnForThreeCaptures &&
+    after.log[0] === "Blue passive draw limit reached. Draw skipped.";
+}
+
+function validatesOnlineCardStateSerialization(): boolean {
+  const state = drawCard(createInitialGameState(), "Blue");
+  const serialized = serializeGameStateForFirestore(state);
+  const restored = deserializeGameStateFromFirestore(serialized);
+  return serialized.cards?.Blue.deckIds.length === 6 &&
+    serialized.cards.Blue.handIds[0] === "basic_gambit" &&
+    restored.cards.Blue.hand[0].name === "Gambit";
+}
+
+function validatesMissingCardStateDefaults(): boolean {
+  const serialized = serializeGameStateForFirestore(createInitialGameState());
+  const restored = deserializeGameStateFromFirestore({
+    ...serialized,
+    cards: undefined,
+    drawState: undefined,
+  });
+  return restored.cards.Blue.deck.length === 7 &&
+    restored.cards.Blue.hand.length === 0 &&
+    restored.drawState.Blue.passiveDrawsUsed === 0;
+}
+
+function validatesUnimplementedCardsCannotBePlayed(): boolean {
+  const state = drawCard(createInitialGameState(), "Blue");
+  const after = playCard(state, "Blue", "basic_gambit");
+  return after.cards.Blue.hand.length === 1 &&
+    after.cards.Blue.discard.length === 0 &&
+    after.log[0] === "Blue holds Gambit; play effects are not wired yet.";
+}
+
+function validatesAdvancePieceRestriction(): boolean {
+  const state = customState([
+    bluePiece("pawn", "Pawn", { col: 3, row: 2 }),
+    bluePiece("guard", "Guard", { col: 4, row: 2 }),
+    bluePiece("rook", "Rook", { col: 0, row: 1 }),
+  ]);
+  return getAdvanceMoves(state, "pawn").length === 1 &&
+    getAdvanceMoves(state, "guard").length === 1 &&
+    getAdvanceMoves(state, "rook").length === 0;
+}
+
+function validatesAdvanceMovesTwoForward(): boolean {
+  const blueState = customState([bluePiece("pawn", "Pawn", { col: 3, row: 2 })]);
+  const redState = customState([{ id: "pawn", side: "Red", type: "Pawn", position: { col: 3, row: 6 } }], "Red");
+  return same(getAdvanceMoves(blueState, "pawn")[0], { col: 3, row: 4 }) &&
+    same(getAdvanceMoves(redState, "pawn")[0], { col: 3, row: 4 });
+}
+
+function validatesAdvanceCannotCaptureOrJump(): boolean {
+  const blocked = customState([
+    bluePiece("pawn", "Pawn", { col: 3, row: 2 }),
+    bluePiece("blocker", "Pawn", { col: 3, row: 3 }),
+  ]);
+  const capture = customState([
+    bluePiece("pawn", "Pawn", { col: 3, row: 2 }),
+    redPiece("target", { col: 3, row: 4 }),
+  ]);
+  return getAdvanceMoves(blocked, "pawn").length === 0 && getAdvanceMoves(capture, "pawn").length === 0;
+}
+
+function validatesAdvanceDiscardAfterMove(): boolean {
+  const state = {
+    ...customState([bluePiece("pawn", "Pawn", { col: 3, row: 2 })]),
+    cards: {
+      ...createDefaultCards(DEFAULT_SELECTED_FACTIONS),
+      Blue: {
+        ...createDefaultCards(DEFAULT_SELECTED_FACTIONS).Blue,
+        deck: [],
+        hand: [{ id: "basic_advance", name: "Advance", source: "Basic" as const, timing: "beforeMove" as const, description: "", implemented: true }],
+      },
+    },
+  };
+  const active = playCard(state, "Blue", "basic_advance", { timing: "beforeMove" });
+  const after = applyAdvanceMove(active, "pawn", { col: 3, row: 4 });
+  return after.cards.Blue.hand.length === 0 && after.cards.Blue.discard.some((card) => card.id === "basic_advance");
+}
+
+function validatesAdvanceCancelKeepsCard(): boolean {
+  const state = {
+    ...createInitialGameState(),
+    cards: {
+      ...createInitialGameState().cards,
+      Blue: {
+        ...createInitialGameState().cards.Blue,
+        hand: [{ id: "basic_advance", name: "Advance", source: "Basic" as const, timing: "beforeMove" as const, description: "", implemented: true }],
+      },
+    },
+  };
+  const active = playCard(state, "Blue", "basic_advance", { timing: "beforeMove" });
+  return active.activeMoveCard?.cardName === "Advance" && active.cards.Blue.hand.length === 1;
+}
+
+function validatesGambitWindowOpens(): boolean {
+  const state = {
+    ...customState([
+      bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+      redPiece("defender", { col: 4, row: 5 }),
+    ]),
+    cards: {
+      ...createDefaultCards(DEFAULT_SELECTED_FACTIONS),
+      Blue: {
+        ...createDefaultCards(DEFAULT_SELECTED_FACTIONS).Blue,
+        hand: [{ id: "basic_gambit", name: "Gambit", source: "Basic" as const, timing: "afterCombat" as const, description: "", implemented: true }],
+      },
+    },
+  };
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) return false;
+  const pending = rollPendingCombatSide(
+    rollPendingCombatSide(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 1), "Blue", { dieIndex: 0 }, state),
+    "Red",
+    { dieIndex: 0 },
+    state,
+  );
+  return pending.status === "gambitWindow";
+}
+
+function validatesGambitRerollChangesWinner(): boolean {
+  const state = customState([
+    bluePiece("attacker", "Knight", { col: 3, row: 3 }),
+    redPiece("defender", { col: 4, row: 5 }),
+  ]);
+  const move = getLegalMove(state, "attacker", { col: 4, row: 5 });
+  if (!move) return false;
+  const pending = {
+    ...createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 1),
+    status: "gambitWindow" as const,
+    attackerDieIndex: 0,
+    attackerProfileValue: 2,
+    attackerFinalValue: 2,
+    defenderDieIndex: 0,
+    defenderProfileValue: 3,
+    defenderFinalValue: 3,
+  };
+  const rerolled = playPendingCombatGambit(pending, "Blue", { dieIndex: 5 });
+  return rerolled.attackerOriginalDieIndex === 0 &&
+    rerolled.attackerDieIndex === 5 &&
+    rerolled.attackerProfileValue === pending.attackerProfile[5] &&
+    rerolled.attackerUsedGambit === true;
+}
+
+function validatesGambitOnlyOnce(): boolean {
+  const pending = {
+    ...createPendingCombat(createInitialGameState(), { from: { col: 0, row: 1 }, to: { col: 0, row: 3 }, kind: "capture" }, { id: "a", side: "Blue", type: "Pawn" }, { id: "d", side: "Red", type: "Pawn" }, 1),
+    status: "gambitWindow" as const,
+    attackerDieIndex: 0,
+    attackerProfileValue: 1,
+  };
+  const once = playPendingCombatGambit(pending, "Blue", { dieIndex: 1 });
+  const twice = playPendingCombatGambit(once, "Blue", { dieIndex: 5 });
+  return once.attackerDieIndex === twice.attackerDieIndex;
+}
+
+function validatesGambitPassClosesWindow(): boolean {
+  const pending = {
+    ...createPendingCombat(createInitialGameState(), { from: { col: 0, row: 1 }, to: { col: 0, row: 3 }, kind: "capture" }, { id: "a", side: "Blue", type: "Pawn" }, { id: "d", side: "Red", type: "Pawn" }, 1),
+    status: "gambitWindow" as const,
+    attackerDieIndex: 0,
+    attackerProfileValue: 1,
+    attackerFinalValue: 1,
+    defenderDieIndex: 0,
+    defenderProfileValue: 1,
+    defenderFinalValue: 1,
+  };
+  const after = passPendingCombatGambit(passPendingCombatGambit(pending, "Blue"), "Red");
+  return after.status === "revealingResult" && after.attackerWins === true;
+}
+
 function finishedOnlineGame(rematch: NonNullable<OnlineGameDocument["rematch"]>): OnlineGameDocument {
   return {
     gameId: "ROOM01",
@@ -1429,11 +2117,15 @@ function customState(entries: Array<Piece & { position: Position }>, turn: "Blue
     board = setPieceAt(board, position, piece.id);
   });
 
+  const selectedFactions = { ...DEFAULT_SELECTED_FACTIONS };
   return {
     board,
     pieces,
     turn,
     turnNumber: 1,
+    selectedFactions,
+    cards: createDefaultCards(selectedFactions),
+    drawState: createDefaultDrawState(),
     log: [],
     moveHistory: [],
   };

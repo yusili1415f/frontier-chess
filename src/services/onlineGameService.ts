@@ -1,12 +1,16 @@
 import { doc, getDoc, onSnapshot, runTransaction, setDoc, Unsubscribe } from "firebase/firestore";
 import { getLegalMove } from "../engine/movement";
-import { applyMove, createInitialGameState } from "../engine/gameState";
+import { applyAdvanceMove, applyMove, createInitialGameState } from "../engine/gameState";
 import { annotateLastMove } from "../engine/history";
-import { PlayerSide } from "../engine/types";
+import { PlayerSide, SelectedFactions } from "../engine/types";
+import { cancelActiveMoveCard, moveCardFromHandToDiscard, playCard } from "../engine/cards/cardEngine";
 import {
   autoRollExpiredPendingCombat,
+  canSideUseGambit,
   createPendingCombat,
+  passPendingCombatGambit,
   pendingCombatToForcedDice,
+  playPendingCombatGambit,
   rollPendingCombatSide,
 } from "../engine/pendingCombat";
 import {
@@ -45,9 +49,10 @@ export function getOrCreatePlayerId(): string {
   return id;
 }
 
-export async function createOnlineGame(playerId: string): Promise<string> {
+export async function createOnlineGame(playerId: string, selectedFactions?: SelectedFactions): Promise<string> {
   const gameId = createRoomCode();
   const now = Date.now();
+  const initialState = createInitialGameState();
   const game = serializeOnlineGameForFirestore({
     gameId,
     gameVersion: APP_GAME_VERSION,
@@ -56,7 +61,10 @@ export async function createOnlineGame(playerId: string): Promise<string> {
     status: "waiting",
     currentPlayer: "Blue",
     bluePlayerId: playerId,
-    gameState: createInitialGameState(),
+    gameState: {
+      ...initialState,
+      selectedFactions: selectedFactions ? { ...selectedFactions } : initialState.selectedFactions,
+    },
     matchNumber: 1,
     rematch: createEmptyRematchState(),
     previousResults: [],
@@ -136,17 +144,18 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
     const side = game.currentPlayer;
     assertPlayerOwnsTurn(game, playerId, side);
 
-    const legalMove = getLegalMove(game.gameState, moveInput.pieceId, moveInput.to);
-    if (!legalMove) {
+    const before = game.gameState;
+    const isAdvanceMove = before.activeMoveCard?.cardName === "Advance";
+    const legalMove = getLegalMove(before, moveInput.pieceId, moveInput.to);
+    if (!legalMove && !isAdvanceMove) {
       throw new Error("That move is not legal in the latest online game state.");
     }
 
-    const before = game.gameState;
     const attacker = before.pieces[moveInput.pieceId];
     const defenderId = before.board[moveInput.to.row - 1]?.[moveInput.to.col]?.pieceId;
     const defender = defenderId ? before.pieces[defenderId] : undefined;
 
-    if (moveInput.combatRollMode === "manual" && legalMove.classification?.kind === "combatCapture" && attacker && defender) {
+    if (legalMove && moveInput.combatRollMode === "manual" && legalMove.classification?.kind === "combatCapture" && attacker && defender) {
       const pendingCombat = createPendingCombat(before, legalMove, attacker, defender);
       const serializedState = serializeGameStateForFirestore({ ...before, selectedPieceId: undefined });
       const nextGame: Partial<OnlineGameDocument> = {
@@ -162,7 +171,9 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
       return;
     }
 
-    const applied = applyMove(before, moveInput.pieceId, legalMove);
+    const applied = isAdvanceMove
+      ? applyAdvanceMove(before, moveInput.pieceId, moveInput.to)
+      : legalMove ? applyMove(before, moveInput.pieceId, legalMove) : before;
     if (applied === before || !applied.lastMove) {
       throw new Error("Move could not be applied.");
     }
@@ -184,6 +195,78 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
 
     assertNoNestedArraysInDevelopment(nextGame, "submitOnlineMove");
     transaction.update(ref, sanitizeForFirestoreRecord(nextGame));
+  });
+}
+
+export async function submitOnlineCardPlay(gameId: string, playerId: string, cardId: string): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    const side = game.currentPlayer;
+    assertPlayerOwnsTurn(game, playerId, side);
+    if (game.pendingCombat) {
+      throw new Error("Cards cannot be played during pending combat unless the combat card window is active.");
+    }
+    const nextState = playCard(game.gameState, side, cardId, { timing: "beforeMove" });
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      gameState: serializedState,
+      moveHistory: serializedState.moveHistory,
+    }));
+  });
+}
+
+export async function cancelOnlineActiveMoveCard(gameId: string, playerId: string): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    const side = game.currentPlayer;
+    assertPlayerOwnsTurn(game, playerId, side);
+    const nextState = cancelActiveMoveCard(game.gameState, side);
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({ updatedAt: Date.now(), gameState: serializedState }));
+  });
+}
+
+export async function submitOnlineGambitResponse(gameId: string, playerId: string, side: PlayerSide, action: "play" | "pass"): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    if (!storedGame.pendingCombat) {
+      throw new Error("There is no pending combat.");
+    }
+    assertPlayerOwnsTurn(storedGame, playerId, side);
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    if (action === "play" && !canSideUseGambit(game.pendingCombat!, game.gameState, side)) {
+      throw new Error("Gambit cannot be played by this side.");
+    }
+    const pendingCombat = action === "play"
+      ? playPendingCombatGambit(game.pendingCombat!, side)
+      : passPendingCombatGambit(game.pendingCombat!, side);
+    const nextState = action === "play"
+      ? moveCardFromHandToDiscard(game.gameState, side, "basic_gambit")
+      : game.gameState;
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      gameState: serializedState,
+      pendingCombat: serializePendingCombatForFirestore(pendingCombat),
+    }));
   });
 }
 
@@ -211,7 +294,7 @@ export async function submitOnlineCombatRoll(gameId: string, playerId: string, s
       throw new Error("This side is not part of the pending combat.");
     }
 
-    const rolled = rollPendingCombatSide(pendingCombat, side);
+    const rolled = rollPendingCombatSide(pendingCombat, side, {}, game.gameState);
     transaction.update(ref, sanitizeForFirestoreRecord(resolveOrStorePendingCombat(storedGame, rolled)));
   });
 }
