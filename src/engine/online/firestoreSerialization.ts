@@ -91,6 +91,7 @@ export function deserializeOnlineGameFromFirestore(game: OnlineGameDocument): On
   const gameState = deserializeGameStateFromFirestore(game.gameState);
   return {
     ...game,
+    gameVersion: game.gameVersion ?? "core",
     gameState,
     moveHistory: gameState.moveHistory,
     pendingCombat: game.pendingCombat ? deserializePendingCombatFromFirestore(game.pendingCombat) : null,

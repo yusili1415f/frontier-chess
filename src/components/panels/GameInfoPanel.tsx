@@ -1,4 +1,5 @@
 import { GameState } from "../../engine/types";
+import { APP_BUILD_LABEL } from "../../appVersion";
 
 type GameInfoPanelProps = {
   state: GameState;
@@ -9,7 +10,7 @@ export function GameInfoPanel({ state, onReset }: GameInfoPanelProps) {
   return (
     <section className="panel-block game-info-panel">
       <p className="eyebrow">Frontier Chess</p>
-      <h1>Playtest Build</h1>
+      <h1>{APP_BUILD_LABEL}</h1>
       <div className="info-grid">
         <span>Current player</span>
         <strong className={state.turn.toLowerCase()}>{state.winner ? `${state.winner} wins` : state.turn}</strong>

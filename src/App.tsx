@@ -19,7 +19,9 @@ import { ReplayPanel } from "./components/panels/ReplayPanel";
 import { RulesReferencePanel } from "./components/panels/RulesReferencePanel";
 import { SelectedPiecePanel } from "./components/panels/SelectedPiecePanel";
 import { AiMode, SimulationPanel } from "./components/panels/SimulationPanel";
+import { FactionPanel } from "./components/panels/FactionPanel";
 import { ScenarioPanel } from "./components/ScenarioPanel";
+import { APP_BUILD_LABEL } from "./appVersion";
 import { AIPlayOptions, AIStatus, GameMode, getNextSwitchedMode, isAITurn, isHumanTurn } from "./engine/ai/aiTurn";
 import { applyMove, createInitialGameState, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice } from "./engine/gameState";
 import { annotateLastMove, createGameSnapshot, GameHistoryEntry, GameSnapshot, MoveActor } from "./engine/history";
@@ -776,6 +778,7 @@ export function App() {
       left={
         <>
           <GameInfoPanel state={displayState} onReset={handleResetGame} />
+          <FactionPanel />
           <DisplaySettingsPanel
             combatRollMode={combatRollMode}
             mobileBoardLockMode={mobileBoardLockMode}
@@ -864,6 +867,7 @@ export function App() {
             <div>
               <p className="eyebrow">Frontier Chess</p>
               <h1>Core Rules Prototype</h1>
+              <span className="version-label">{APP_BUILD_LABEL}</span>
             </div>
           </header>
 

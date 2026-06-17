@@ -4,6 +4,13 @@ This prototype is a static Vite web app. It can be deployed to Vercel so testers
 
 Local modes are still separate per browser. Online Multiplayer rooms sync through Firestore and require Firebase environment variables.
 
+## Branch Deployment Policy
+
+- The `main` branch deploys the stable core game with no faction rules.
+- The `faction-dev` branch can be deployed separately as a faction test app.
+- Do not merge `faction-dev` into `main` until faction rules are tested.
+- Online room documents include `gameVersion: "core" | "faction"` so stable rooms and faction-test rooms can be separated when needed.
+
 ## Deploy to Vercel
 
 1. Push the project to GitHub.

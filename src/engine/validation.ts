@@ -1403,6 +1403,7 @@ function validatesAutomaticCombatUnchanged(): boolean {
 function finishedOnlineGame(rematch: NonNullable<OnlineGameDocument["rematch"]>): OnlineGameDocument {
   return {
     gameId: "ROOM01",
+    gameVersion: "faction",
     createdAt: 1,
     updatedAt: 2,
     status: "finished",

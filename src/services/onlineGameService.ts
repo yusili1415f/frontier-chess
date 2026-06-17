@@ -25,6 +25,7 @@ import {
   serializeGameStateForFirestore,
 } from "../engine/online/firestoreSerialization";
 import { firebaseConfigured, requireFirestore } from "./firebase";
+import { APP_GAME_VERSION } from "../appVersion";
 
 const PLAYER_ID_KEY = "frontierChessPlayerId";
 const GAME_COLLECTION = "games";
@@ -49,6 +50,7 @@ export async function createOnlineGame(playerId: string): Promise<string> {
   const now = Date.now();
   const game = serializeOnlineGameForFirestore({
     gameId,
+    gameVersion: APP_GAME_VERSION,
     createdAt: now,
     updatedAt: now,
     status: "waiting",
@@ -338,6 +340,7 @@ export function startOnlineRematchIfBothAccepted(game: OnlineGameDocument): Part
   return {
     updatedAt: Date.now(),
     status: "active",
+    gameVersion: game.gameVersion ?? APP_GAME_VERSION,
     currentPlayer: "Blue",
     bluePlayerId: shouldSwap ? game.redPlayerId : game.bluePlayerId,
     redPlayerId: shouldSwap ? game.bluePlayerId : game.redPlayerId,

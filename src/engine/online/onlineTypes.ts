@@ -2,6 +2,7 @@ import { MoveActor } from "../history";
 import { GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position } from "../types";
 
 export type OnlineGameStatus = "waiting" | "active" | "finished";
+export type OnlineGameVersion = "core" | "faction";
 export type OnlinePlayerRole = PlayerSide | "Spectator";
 export type OnlineFinishReason = "kingCaptured" | "maxTurns" | "noLegalMoves";
 export type OnlineRematchSideMode = "same" | "swap";
@@ -118,6 +119,7 @@ export interface FirestoreGameState {
 
 export interface OnlineGameDocument {
   gameId: string;
+  gameVersion: OnlineGameVersion;
   createdAt: number;
   updatedAt: number;
   status: OnlineGameStatus;
