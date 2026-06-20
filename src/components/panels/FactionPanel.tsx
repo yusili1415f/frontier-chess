@@ -12,7 +12,7 @@ export function FactionPanel({ disabled = false, onFactionChange, selectedFactio
   return (
     <section className="panel-block faction-panel">
       <h2>Factions</h2>
-      <p className="muted-copy">Faction powers are data-only placeholders and do not affect gameplay yet.</p>
+      <p className="muted-copy">Faction powers are card effects only. They trigger when a card is played.</p>
       <FactionSideSelector
         disabled={disabled}
         faction={findFaction(selectedFactions.Blue)}

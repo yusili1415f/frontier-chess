@@ -1,6 +1,5 @@
 import { getCombatProfileForPiece } from "./data/classProfiles";
 import { getPiecePosition, isFrontierZone, isHomeTerritory } from "./board";
-import { applyBeforeCombatFactionEffects } from "./factions/factionEngine";
 import { CombatModifier, CombatResult, ForcedDice, GameState, Piece, Position } from "./types";
 
 export function shouldTriggerCombat(target: Position): boolean {
@@ -32,16 +31,8 @@ export function resolveCombat(
   const defenderRollIndex = clampDieIndex(forcedDice.defenderRollIndex ?? rollDieIndex());
   const attackerBaseValue = forcedDice.attackerValue ?? getCombatProfileForPiece(attacker)[attackerRollIndex];
   const defenderBaseValue = forcedDice.defenderValue ?? getCombatProfileForPiece(defender)[defenderRollIndex];
-  const factionContext = applyBeforeCombatFactionEffects({
-    attacker,
-    defender,
-    attackerModifiers: [] as CombatModifier[],
-    defenderModifiers: [] as CombatModifier[],
-    gameState: state,
-    target,
-  });
-  const attackerModifiers = factionContext.attackerModifiers;
-  const defenderModifiers = factionContext.defenderModifiers;
+  const attackerModifiers = forcedDice.attackerModifiers ?? [];
+  const defenderModifiers = forcedDice.defenderModifiers ?? [];
   const attackerFinalValue = applyModifiers(attackerBaseValue, attackerModifiers);
   const defenderFinalValue = applyModifiers(defenderBaseValue, defenderModifiers);
   const attackerWon = attackerFinalValue >= defenderFinalValue;

@@ -1,5 +1,4 @@
 import { TEST_FACTIONS } from "../../data/factions/testFactions";
-import { isFrontierZone } from "../board";
 import { CombatModifier, GameState, Piece, PlayerSide, Position } from "../types";
 import { FactionCard, FactionTimingWindow } from "./factionTypes";
 
@@ -29,31 +28,6 @@ export function getFactionCardsForTiming(
 }
 
 export function applyBeforeCombatFactionEffects<TContext extends BeforeCombatFactionContext>(context: TContext): TContext {
-  const dragonStandard = TEST_FACTIONS
-    .find((faction) => faction.id === "dragon_banner_army")
-    ?.cards.find((card) => card.id === "dragon_banner" && card.implemented);
-
-  if (
-    dragonStandard &&
-    context.gameState.selectedFactions[context.attacker.side] === "dragon_banner_army" &&
-    isFrontierZone(context.target)
-  ) {
-    return {
-      ...context,
-      attackerModifiers: [
-        ...context.attackerModifiers,
-        {
-          source: "Dragon Standard",
-          side: context.attacker.side,
-          pieceId: context.attacker.id,
-          value: 1,
-          description: "attacker in Frontier Zone",
-        },
-      ],
-      debugText: "Dragon Standard checked: attacker gains +1 in the Frontier Zone.",
-    };
-  }
-
   return withNoImplementedEffects(context);
 }
 

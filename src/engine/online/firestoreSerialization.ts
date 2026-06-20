@@ -44,6 +44,8 @@ export function serializeGameStateForFirestore(gameState: GameState): FirestoreG
           defenderRollIndex: gameState.forcedDice.defenderRollIndex ?? null,
           attackerValue: gameState.forcedDice.attackerValue ?? null,
           defenderValue: gameState.forcedDice.defenderValue ?? null,
+          attackerModifiers: gameState.forcedDice.attackerModifiers ?? [],
+          defenderModifiers: gameState.forcedDice.defenderModifiers ?? [],
         }
       : null,
     winner: gameState.winner ?? null,
@@ -99,6 +101,8 @@ export function deserializeGameStateFromFirestore(data: FirestoreGameState): Gam
           defenderRollIndex: data.forcedDice.defenderRollIndex ?? undefined,
           attackerValue: data.forcedDice.attackerValue ?? undefined,
           defenderValue: data.forcedDice.defenderValue ?? undefined,
+          attackerModifiers: data.forcedDice.attackerModifiers ?? [],
+          defenderModifiers: data.forcedDice.defenderModifiers ?? [],
         }
       : undefined,
     winner: data.winner ?? undefined,
@@ -114,18 +118,21 @@ function normalizeSelectedFactions(selectedFactions: FirestoreGameState["selecte
 
 function serializePlayerCardsForFirestore(cards: GameState["cards"][PlayerSide]): FirestorePlayerCardState {
   return {
-    deckIds: cards.deck.map((card) => card.id),
-    handIds: cards.hand.map((card) => card.id),
-    discardIds: cards.discard.map((card) => card.id),
+    deckInstanceIds: cards.deck.map((card) => card.id),
+    handInstanceIds: cards.hand.map((card) => card.id),
+    discardInstanceIds: cards.discard.map((card) => card.id),
     handLimit: cards.handLimit,
   };
 }
 
 function deserializePlayerCardsFromFirestore(cards: FirestorePlayerCardState): GameState["cards"][PlayerSide] {
+  const deckIds = cards.deckInstanceIds ?? cards.deckIds ?? [];
+  const handIds = cards.handInstanceIds ?? cards.handIds ?? [];
+  const discardIds = cards.discardInstanceIds ?? cards.discardIds ?? [];
   return {
-    deck: cards.deckIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
-    hand: cards.handIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
-    discard: cards.discardIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
+    deck: deckIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
+    hand: handIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
+    discard: discardIds.map(getCardById).filter((card): card is NonNullable<typeof card> => Boolean(card)),
     handLimit: cards.handLimit ?? DEFAULT_HAND_LIMIT,
   };
 }
@@ -260,6 +267,8 @@ export function serializePendingCombatForFirestore(pendingCombat: PendingCombat)
     defenderUsedGambit: pendingCombat.defenderUsedGambit ?? null,
     attackerPassedGambit: pendingCombat.attackerPassedGambit ?? null,
     defenderPassedGambit: pendingCombat.defenderPassedGambit ?? null,
+    attackerPlayedCardIds: pendingCombat.attackerPlayedCardIds ?? [],
+    defenderPlayedCardIds: pendingCombat.defenderPlayedCardIds ?? [],
     gambitWindowStartedAt: pendingCombat.gambitWindowStartedAt ?? null,
     gambitWindowDeadlineAt: pendingCombat.gambitWindowDeadlineAt ?? null,
     resultRevealedAt: pendingCombat.resultRevealedAt ?? null,
@@ -305,6 +314,8 @@ export function deserializePendingCombatFromFirestore(entry: FirestorePendingCom
     defenderUsedGambit: entry.defenderUsedGambit ?? undefined,
     attackerPassedGambit: entry.attackerPassedGambit ?? undefined,
     defenderPassedGambit: entry.defenderPassedGambit ?? undefined,
+    attackerPlayedCardIds: entry.attackerPlayedCardIds ?? [],
+    defenderPlayedCardIds: entry.defenderPlayedCardIds ?? [],
     gambitWindowStartedAt: entry.gambitWindowStartedAt ?? undefined,
     gambitWindowDeadlineAt: entry.gambitWindowDeadlineAt ?? undefined,
     resultRevealedAt: entry.resultRevealedAt ?? undefined,

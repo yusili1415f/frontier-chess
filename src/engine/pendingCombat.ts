@@ -1,9 +1,8 @@
-import { coordinateLabel } from "./board";
+import { coordinateLabel, getPiecePosition, getSquare, isInsideBoard } from "./board";
 import { applyModifiers } from "./combat";
 import { getCombatProfileForPiece, getCombatProfileNameForPiece } from "./data/classProfiles";
-import { applyBeforeCombatFactionEffects } from "./factions/factionEngine";
-import { GameState, LegalMove, PendingCombat, Piece, PlayerSide } from "./types";
-import { hasCardInHand } from "./cards/cardEngine";
+import { GameState, LegalMove, PendingCombat, Piece, PlayerSide, Position } from "./types";
+import { cardDefinitionId, hasCardInHand, moveCardFromHandToDiscard } from "./cards/cardEngine";
 
 export const COMBAT_ROLL_TIMEOUT_MS = 15_000;
 export const COMBAT_RESULT_REVEAL_MS = 2_000;
@@ -16,15 +15,6 @@ export function createPendingCombat(
   defender: Piece,
   now = Date.now(),
 ): PendingCombat {
-  const factionContext = applyBeforeCombatFactionEffects({
-    attacker,
-    defender,
-    attackerModifiers: [],
-    defenderModifiers: [],
-    gameState: state,
-    target: move.to,
-  });
-
   return {
     combatId: `${state.turnNumber}-${attacker.id}-${defender.id}-${coordinateLabel(move.to)}-${now}`,
     attackerPieceId: attacker.id,
@@ -38,8 +28,8 @@ export function createPendingCombat(
     defenderProfileName: getCombatProfileNameForPiece(defender),
     attackerProfile: [...getCombatProfileForPiece(attacker)],
     defenderProfile: [...getCombatProfileForPiece(defender)],
-    attackerModifiers: factionContext.attackerModifiers,
-    defenderModifiers: factionContext.defenderModifiers,
+    attackerModifiers: [],
+    defenderModifiers: [],
     startedAt: now,
     rollDeadlineAt: now + COMBAT_ROLL_TIMEOUT_MS,
     status: "waitingForAttackerRoll",
@@ -127,6 +117,8 @@ export function pendingCombatToForcedDice(pendingCombat: PendingCombat) {
     defenderAutoRolled: pendingCombat.defenderAutoRolled,
     attackerUsedGambit: pendingCombat.attackerUsedGambit,
     defenderUsedGambit: pendingCombat.defenderUsedGambit,
+    attackerModifiers: pendingCombat.attackerModifiers,
+    defenderModifiers: pendingCombat.defenderModifiers,
   };
 }
 
@@ -190,6 +182,92 @@ export function passPendingCombatGambit(pendingCombat: PendingCombat, side: Play
   return pendingCombat;
 }
 
+export function canPlayBeforeCombatCard(
+  pendingCombat: PendingCombat,
+  gameState: GameState,
+  side: PlayerSide,
+  cardId: string,
+): boolean {
+  if (pendingCombat.status !== "waitingForAttackerRoll" && pendingCombat.status !== "waitingForDefenderRoll" && pendingCombat.status !== "waitingForBothRolls") {
+    return false;
+  }
+  const card = gameState.cards[side].hand.find((entry) => entry.id === cardId) ??
+    gameState.cards[side].hand.find((entry) => cardDefinitionId(entry) === cardId);
+  if (!card?.implemented || card.timing !== "beforeCombat") {
+    return false;
+  }
+  const definitionId = cardDefinitionId(card);
+  if (hasPlayedCardDefinition(pendingCombat, side, definitionId)) {
+    return false;
+  }
+  const piece = combatPieceForSide(pendingCombat, gameState, side);
+  if (!piece) {
+    return false;
+  }
+  if (definitionId === "dragon_formation") {
+    return gameState.selectedFactions[side] === "dragon_banner_army" && isAdjacentToFriendlyType(gameState, piece, "Guard");
+  }
+  if (definitionId === "guan_dao_champion") {
+    return gameState.selectedFactions[side] === "dragon_banner_army" &&
+      piece.type === "Guard" &&
+      isAdjacentToFriendlyPiece(gameState, piece);
+  }
+  return false;
+}
+
+export function playBeforeCombatCard(
+  pendingCombat: PendingCombat,
+  gameState: GameState,
+  side: PlayerSide,
+  cardId: string,
+): { pendingCombat: PendingCombat; gameState: GameState } {
+  if (!canPlayBeforeCombatCard(pendingCombat, gameState, side, cardId)) {
+    return { pendingCombat, gameState };
+  }
+  const card = gameState.cards[side].hand.find((entry) => entry.id === cardId) ??
+    gameState.cards[side].hand.find((entry) => cardDefinitionId(entry) === cardId);
+  if (!card) {
+    return { pendingCombat, gameState };
+  }
+  const definitionId = cardDefinitionId(card);
+  const piece = combatPieceForSide(pendingCombat, gameState, side);
+  if (!piece) {
+    return { pendingCombat, gameState };
+  }
+  const value = definitionId === "guan_dao_champion" ? 2 : 1;
+  const source = definitionId === "guan_dao_champion" ? "Guan Dao Champion" : "Dragon Formation";
+  const description = definitionId === "guan_dao_champion"
+    ? "+2 to Guard combat result"
+    : `+1 because ${side} ${piece.type} is adjacent to a friendly Guard`;
+  const modifier = {
+    source,
+    side,
+    pieceId: piece.id,
+    value,
+    description,
+  };
+  const isAttacker = side === pendingCombat.attackerSide;
+  const nextPending = recalculatePendingCombatValues({
+    ...pendingCombat,
+    attackerModifiers: isAttacker ? [...(pendingCombat.attackerModifiers ?? []), modifier] : pendingCombat.attackerModifiers,
+    defenderModifiers: !isAttacker ? [...(pendingCombat.defenderModifiers ?? []), modifier] : pendingCombat.defenderModifiers,
+    attackerPlayedCardIds: isAttacker
+      ? [...(pendingCombat.attackerPlayedCardIds ?? []), definitionId]
+      : pendingCombat.attackerPlayedCardIds,
+    defenderPlayedCardIds: !isAttacker
+      ? [...(pendingCombat.defenderPlayedCardIds ?? []), definitionId]
+      : pendingCombat.defenderPlayedCardIds,
+  });
+  const nextState = moveCardFromHandToDiscard(gameState, side, card.id);
+  return {
+    pendingCombat: nextPending,
+    gameState: {
+      ...nextState,
+      log: [`${side} plays ${source}: ${modifier.description}.`, ...nextState.log],
+    },
+  };
+}
+
 export function getPendingCombatFinalValue(pendingCombat: PendingCombat, role: "attacker" | "defender"): number {
   if (role === "attacker") {
     return pendingCombat.attackerFinalValue ??
@@ -197,6 +275,20 @@ export function getPendingCombatFinalValue(pendingCombat: PendingCombat, role: "
   }
   return pendingCombat.defenderFinalValue ??
     applyModifiers(pendingCombat.defenderProfileValue ?? 0, pendingCombat.defenderModifiers ?? []);
+}
+
+function recalculatePendingCombatValues(pendingCombat: PendingCombat): PendingCombat {
+  const attackerFinalValue = pendingCombat.attackerProfileValue === undefined
+    ? pendingCombat.attackerFinalValue
+    : applyModifiers(pendingCombat.attackerProfileValue, pendingCombat.attackerModifiers ?? []);
+  const defenderFinalValue = pendingCombat.defenderProfileValue === undefined
+    ? pendingCombat.defenderFinalValue
+    : applyModifiers(pendingCombat.defenderProfileValue, pendingCombat.defenderModifiers ?? []);
+  return {
+    ...pendingCombat,
+    attackerFinalValue,
+    defenderFinalValue,
+  };
 }
 
 export function canSideRollPendingCombat(pendingCombat: PendingCombat, side: PlayerSide): boolean {
@@ -258,6 +350,63 @@ function withGambitResponse(pendingCombat: PendingCombat): PendingCombat {
   const attackerDone = pendingCombat.attackerUsedGambit || pendingCombat.attackerPassedGambit;
   const defenderDone = pendingCombat.defenderUsedGambit || pendingCombat.defenderPassedGambit;
   return attackerDone && defenderDone ? revealPendingCombat(pendingCombat) : pendingCombat;
+}
+
+function hasPlayedCardDefinition(pendingCombat: PendingCombat, side: PlayerSide, definitionId: string): boolean {
+  if (side === pendingCombat.attackerSide) {
+    return (pendingCombat.attackerPlayedCardIds ?? []).includes(definitionId);
+  }
+  if (side === pendingCombat.defenderSide) {
+    return (pendingCombat.defenderPlayedCardIds ?? []).includes(definitionId);
+  }
+  return true;
+}
+
+function combatPieceForSide(pendingCombat: PendingCombat, gameState: GameState, side: PlayerSide): Piece | undefined {
+  const pieceId = side === pendingCombat.attackerSide
+    ? pendingCombat.attackerPieceId
+    : side === pendingCombat.defenderSide ? pendingCombat.defenderPieceId : undefined;
+  return pieceId ? gameState.pieces[pieceId] : undefined;
+}
+
+function isAdjacentToFriendlyType(gameState: GameState, piece: Piece, type: Piece["type"]): boolean {
+  return adjacentFriendlyPieces(gameState, piece).some((friendly) => friendly.type === type);
+}
+
+function isAdjacentToFriendlyPiece(gameState: GameState, piece: Piece): boolean {
+  return adjacentFriendlyPieces(gameState, piece).length > 0;
+}
+
+function adjacentFriendlyPieces(gameState: GameState, piece: Piece): Piece[] {
+  const from = getPiecePosition(gameState.board, piece.id);
+  if (!from) {
+    return [];
+  }
+  const result: Piece[] = [];
+  for (const position of adjacentSquares(from)) {
+    const pieceId = getSquare(gameState.board, position)?.pieceId;
+    const neighbor = pieceId ? gameState.pieces[pieceId] : undefined;
+    if (neighbor && neighbor.side === piece.side) {
+      result.push(neighbor);
+    }
+  }
+  return result;
+}
+
+function adjacentSquares(position: Position): Position[] {
+  const squares: Position[] = [];
+  for (let dc = -1; dc <= 1; dc += 1) {
+    for (let dr = -1; dr <= 1; dr += 1) {
+      if (dc === 0 && dr === 0) {
+        continue;
+      }
+      const square = { col: position.col + dc, row: position.row + dr };
+      if (isInsideBoard(square)) {
+        squares.push(square);
+      }
+    }
+  }
+  return squares;
 }
 
 function rollDieIndex(): number {

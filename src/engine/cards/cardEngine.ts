@@ -23,11 +23,29 @@ export function createDefaultDrawState(): DrawStateBySide {
 }
 
 export function buildStartingDeck(factionId: string | null): GameCard[] {
-  return [...BASIC_CARDS, ...getFactionGameCards(factionId)].map(cloneCard);
+  const factionCards = getFactionGameCards(factionId);
+  const advance = BASIC_CARDS.find((card) => card.id === "basic_advance");
+  const gambit = BASIC_CARDS.find((card) => card.id === "basic_gambit");
+  const banner = factionCards.find((card) => card.factionCardType === "Banner");
+  const order = factionCards.find((card) => card.factionCardType === "Order");
+  const relic = factionCards.find((card) => card.factionCardType === "Relic");
+  return [
+    ...(advance ? [createCardInstance(advance, "basic_advance")] : []),
+    ...(gambit ? [createCardInstance(gambit, "basic_gambit")] : []),
+    ...(banner ? [createCardInstance(banner, `${banner.id}_1`), createCardInstance(banner, `${banner.id}_2`)] : []),
+    ...(order ? [createCardInstance(order, `${order.id}_1`), createCardInstance(order, `${order.id}_2`)] : []),
+    ...(relic ? [createCardInstance(relic, `${relic.id}_1`)] : []),
+  ];
 }
 
 export function getCardById(cardId: string): GameCard | undefined {
-  return getAllKnownCards().find((card) => card.id === cardId);
+  const known = getAllKnownCards().find((card) => card.id === cardId || card.definitionId === cardId);
+  if (known) {
+    return cloneCard(known);
+  }
+  const definitionId = stripCopySuffix(cardId);
+  const definition = getAllKnownCards().find((card) => card.id === definitionId || card.definitionId === definitionId);
+  return definition ? createCardInstance(definition, cardId) : undefined;
 }
 
 export function canDrawCard(gameState: GameState, side: PlayerSide): boolean {
@@ -67,7 +85,7 @@ export function drawCards(gameState: GameState, side: PlayerSide, count: number)
 
 export function discardCard(gameState: GameState, side: PlayerSide, cardId: string): GameState {
   const cards = gameState.cards[side];
-  const card = cards.hand.find((entry) => entry.id === cardId);
+  const card = findCardInHand(cards, cardId);
   if (!card) {
     return gameState;
   }
@@ -79,7 +97,7 @@ export function discardCard(gameState: GameState, side: PlayerSide, cardId: stri
         ...gameState.cards,
         [side]: {
           ...cards,
-          hand: cards.hand.filter((entry) => entry.id !== cardId),
+          hand: removeCardFromHand(cards.hand, card.id),
           discard: [...cards.discard, card],
         },
       },
@@ -90,7 +108,7 @@ export function discardCard(gameState: GameState, side: PlayerSide, cardId: stri
 
 export function moveCardFromHandToDiscard(gameState: GameState, side: PlayerSide, cardId: string): GameState {
   const cards = gameState.cards[side];
-  const card = cards.hand.find((entry) => entry.id === cardId);
+  const card = findCardInHand(cards, cardId);
   if (!card) {
     return gameState;
   }
@@ -100,7 +118,7 @@ export function moveCardFromHandToDiscard(gameState: GameState, side: PlayerSide
       ...gameState.cards,
       [side]: {
         ...cards,
-        hand: cards.hand.filter((entry) => entry.id !== cardId),
+        hand: removeCardFromHand(cards.hand, card.id),
         discard: [...cards.discard, card],
       },
     },
@@ -108,11 +126,11 @@ export function moveCardFromHandToDiscard(gameState: GameState, side: PlayerSide
 }
 
 export function hasCardInHand(gameState: GameState, side: PlayerSide, cardId: string): boolean {
-  return gameState.cards[side].hand.some((card) => card.id === cardId);
+  return gameState.cards[side].hand.some((card) => isCardMatch(card, cardId));
 }
 
 export function canPlayCard(gameState: GameState, side: PlayerSide, cardId: string, context?: { timing?: GameCard["timing"] }): boolean {
-  const card = gameState.cards[side].hand.find((entry) => entry.id === cardId);
+  const card = findCardInHand(gameState.cards[side], cardId);
   if (!card) {
     return false;
   }
@@ -122,21 +140,24 @@ export function canPlayCard(gameState: GameState, side: PlayerSide, cardId: stri
   if (context?.timing && card.timing !== context.timing) {
     return false;
   }
-  if (card.id === "basic_advance") {
+  if (cardDefinitionId(card) === "basic_advance") {
+    return gameState.turn === side && !gameState.activeMoveCard;
+  }
+  if (cardDefinitionId(card) === "banner_drill") {
     return gameState.turn === side && !gameState.activeMoveCard;
   }
   return true;
 }
 
 export function playCard(gameState: GameState, side: PlayerSide, cardId: string, context?: { timing?: GameCard["timing"] }): GameState {
-  const card = gameState.cards[side].hand.find((entry) => entry.id === cardId);
+  const card = findCardInHand(gameState.cards[side], cardId);
   if (!card) {
     return gameState;
   }
   if (!card.implemented || (context?.timing && card.timing !== context.timing)) {
     return withCardLog(gameState, `${side} cannot play ${card.name}: card effect is not implemented.`);
   }
-  if (card.id === "basic_advance") {
+  if (cardDefinitionId(card) === "basic_advance") {
     if (!canPlayCard(gameState, side, cardId, context)) {
       return withCardLog(gameState, `${side} cannot play Advance right now.`);
     }
@@ -144,11 +165,26 @@ export function playCard(gameState: GameState, side: PlayerSide, cardId: string,
       ...gameState,
       activeMoveCard: {
         side,
-        cardId,
+        cardId: card.id,
         cardName: "Advance",
       },
       selectedPieceId: undefined,
     }, `${side} plays Advance. Select a Pawn or Guard to move 2 squares forward.`);
+  }
+  if (cardDefinitionId(card) === "banner_drill") {
+    if (!canPlayCard(gameState, side, card.id, context)) {
+      return withCardLog(gameState, `${side} cannot play Banner Drill right now.`);
+    }
+    return withCardLog({
+      ...gameState,
+      activeMoveCard: {
+        side,
+        cardId: card.id,
+        cardName: "Banner Drill",
+        phase: "selectPiece",
+      },
+      selectedPieceId: undefined,
+    }, `${side} plays Banner Drill. Select a friendly Guard.`);
   }
   return withCardLog(gameState, `${side} holds ${card.name}; play effects are not wired yet.`);
 }
@@ -161,7 +197,7 @@ export function cancelActiveMoveCard(gameState: GameState, side: PlayerSide): Ga
     ...gameState,
     activeMoveCard: undefined,
     selectedPieceId: undefined,
-  }, `${side} cancels Advance.`);
+  }, `${side} cancels ${gameState.activeMoveCard.cardName}.`);
 }
 
 export function getAdvanceMoves(gameState: GameState, pieceId: string): Position[] {
@@ -191,7 +227,7 @@ export function completeActiveMoveCard(gameState: GameState): GameState {
     return gameState;
   }
   const cards = gameState.cards[activeCard.side];
-  const card = cards.hand.find((entry) => entry.id === activeCard.cardId);
+  const card = findCardInHand(cards, activeCard.cardId);
   if (!card) {
     return { ...gameState, activeMoveCard: undefined };
   }
@@ -202,7 +238,7 @@ export function completeActiveMoveCard(gameState: GameState): GameState {
       ...gameState.cards,
       [activeCard.side]: {
         ...cards,
-        hand: cards.hand.filter((entry) => entry.id !== activeCard.cardId),
+        hand: removeCardFromHand(cards.hand, card.id),
         discard: [...cards.discard, card],
       },
     },
@@ -222,6 +258,9 @@ export function applyCardDrawTriggersAfterMove(gameState: GameState, record: Mov
   let nextState = gameState;
   if (record.removedPiece) {
     nextState = handleCapturedPiece(nextState, record.removedPiece);
+  }
+  if (record.removedPiece?.type === "King" || nextState.winner) {
+    return nextState;
   }
   nextState = handleActiveMovementTriggers(nextState, record);
   return nextState;
@@ -251,7 +290,18 @@ function handleCapturedPiece(gameState: GameState, removedPiece: MoveRecord["rem
   }
 
   const side = removedPiece.side;
+  if (removedPiece.type === "King") {
+    return withCardLog(gameState, `${side} King captured. Game over.`);
+  }
+
+  if (removedPiece.type === "Bishop") {
+    return discardHandAndDrawForBishop(updateDrawState(gameState, side, {
+      capturedPiecesCount: gameState.drawState[side].capturedPiecesCount + 1,
+    }), side);
+  }
+
   const drawState = gameState.drawState[side];
+  const eligibleCapturedCount = drawState.eligibleCapturedCount + 1;
   let nextState: GameState = {
     ...gameState,
     drawState: {
@@ -259,22 +309,22 @@ function handleCapturedPiece(gameState: GameState, removedPiece: MoveRecord["rem
       [side]: {
         ...drawState,
         capturedPiecesCount: drawState.capturedPiecesCount + 1,
+        eligibleCapturedCount,
       },
     },
   };
 
   const updatedDrawState = nextState.drawState[side];
-  if (updatedDrawState.capturedPiecesCount >= 3 && !updatedDrawState.hasDrawnForThreeCaptures) {
+  const expectedPassiveDraws = Math.min(PASSIVE_DRAW_LIMIT, Math.floor(updatedDrawState.eligibleCapturedCount / 3));
+  if (expectedPassiveDraws > updatedDrawState.passiveDrawsUsed) {
+    const draws = expectedPassiveDraws - updatedDrawState.passiveDrawsUsed;
     nextState = drawForPassiveTrigger(
       nextState,
       side,
-      `${side} has lost 3 pieces. ${side} draws 1.`,
+      `${side} has lost ${updatedDrawState.eligibleCapturedCount} eligible pieces. ${side} draws ${draws} passive card${draws === 1 ? "" : "s"}.`,
       { hasDrawnForThreeCaptures: true },
+      draws,
     );
-  }
-
-  if (removedPiece.type === "Bishop") {
-    nextState = discardHandAndDrawForBishop(nextState, side);
   }
 
   return nextState;
@@ -285,21 +335,22 @@ function handleActiveMovementTriggers(gameState: GameState, record: MoveRecord):
   const drawState = gameState.drawState[side];
   let nextState = gameState;
 
+  if (!drawState.hasDrawnForFirstEnemyHomeEntry && entersEnemyHome(side, record.move.from, record.move.to)) {
+    nextState = drawForActiveTrigger(
+      nextState,
+      side,
+      `${side} enters enemy home territory for the first time. ${side} draws 1 active card.`,
+      { hasDrawnForFirstEnemyHomeEntry: true },
+    );
+    return nextState;
+  }
+
   if (!drawState.hasDrawnForFirstFrontierCrossing && crossesFrontierLine(side, record.move.from, record.move.to)) {
     nextState = drawForActiveTrigger(
       nextState,
       side,
-      `${side} crosses the Frontier Line for the first time. ${side} draws 1.`,
+      `${side} crosses the Frontier Line for the first time. ${side} draws 1 active card.`,
       { hasDrawnForFirstFrontierCrossing: true },
-    );
-  }
-
-  if (!nextState.drawState[side].hasDrawnForFirstEnemyHomeEntry && entersEnemyHome(side, record.move.from, record.move.to)) {
-    nextState = drawForActiveTrigger(
-      nextState,
-      side,
-      `${side} enters enemy home territory for the first time. ${side} draws 1.`,
-      { hasDrawnForFirstEnemyHomeEntry: true },
     );
   }
 
@@ -311,15 +362,16 @@ function drawForPassiveTrigger(
   side: PlayerSide,
   message: string,
   flags: Partial<PlayerDrawState> = {},
+  count = 1,
 ): GameState {
   const drawState = gameState.drawState[side];
   if (drawState.passiveDrawsUsed >= PASSIVE_DRAW_LIMIT) {
     return updateDrawState(withCardLog(gameState, `${side} passive draw limit reached. Draw skipped.`), side, flags);
   }
-  return drawCard(updateDrawState(withCardLog(gameState, message), side, {
+  return drawCards(updateDrawState(withCardLog(gameState, message), side, {
     ...flags,
-    passiveDrawsUsed: drawState.passiveDrawsUsed + 1,
-  }), side);
+    passiveDrawsUsed: Math.min(PASSIVE_DRAW_LIMIT, drawState.passiveDrawsUsed + count),
+  }), side, count);
 }
 
 function drawForActiveTrigger(
@@ -351,7 +403,7 @@ function discardHandAndDrawForBishop(gameState: GameState, side: PlayerSide): Ga
       },
     },
   };
-  return drawForPassiveTrigger(afterDiscard, side, `${side} Bishop captured. ${side} discards hand and draws 1.`);
+  return drawCard(withCardLog(afterDiscard, `${side} Bishop captured. ${side} discards hand and draws 1.`), side);
 }
 
 function updateDrawState(gameState: GameState, side: PlayerSide, patch: Partial<PlayerDrawState>): GameState {
@@ -380,6 +432,7 @@ function createPlayerDrawState(): PlayerDrawState {
   return {
     passiveDrawsUsed: 0,
     activeDrawsUsed: 0,
+    eligibleCapturedCount: 0,
     capturedPiecesCount: 0,
     hasDrawnForThreeCaptures: false,
     hasDrawnForFirstFrontierCrossing: false,
@@ -408,8 +461,10 @@ function getFactionGameCards(factionId: string | null): GameCard[] {
   return faction
     ? faction.cards.map((card) => ({
         id: card.id,
+        definitionId: card.id,
         name: card.name,
         source: "Faction" as const,
+        factionCardType: card.type,
         timing: card.timing,
         description: card.description,
         implemented: card.implemented,
@@ -423,6 +478,41 @@ function getAllKnownCards(): GameCard[] {
 
 function cloneCard(card: GameCard): GameCard {
   return { ...card };
+}
+
+function createCardInstance(card: GameCard, instanceId: string): GameCard {
+  return {
+    ...cloneCard(card),
+    id: instanceId,
+    definitionId: card.definitionId ?? card.id,
+  };
+}
+
+export function cardDefinitionId(card: GameCard): string {
+  return card.definitionId ?? stripCopySuffix(card.id);
+}
+
+function stripCopySuffix(cardId: string): string {
+  return cardId.replace(/_[12]$/, "");
+}
+
+function findCardInHand(cards: PlayerCardState, cardId: string): GameCard | undefined {
+  return cards.hand.find((entry) => entry.id === cardId) ?? cards.hand.find((entry) => isCardMatch(entry, cardId));
+}
+
+function isCardMatch(card: GameCard, cardId: string): boolean {
+  return card.id === cardId || cardDefinitionId(card) === cardId;
+}
+
+function removeCardFromHand(hand: GameCard[], cardId: string): GameCard[] {
+  let removed = false;
+  return hand.filter((card) => {
+    if (!removed && card.id === cardId) {
+      removed = true;
+      return false;
+    }
+    return true;
+  });
 }
 
 function withCardLog(gameState: GameState, message: string): GameState {

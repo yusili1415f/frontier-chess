@@ -59,6 +59,8 @@ export type FirestorePendingCombat = {
   defenderUsedGambit?: boolean | null;
   attackerPassedGambit?: boolean | null;
   defenderPassedGambit?: boolean | null;
+  attackerPlayedCardIds?: string[];
+  defenderPlayedCardIds?: string[];
   gambitWindowStartedAt?: number | null;
   gambitWindowDeadlineAt?: number | null;
   resultRevealedAt?: number | null;
@@ -143,14 +145,19 @@ export interface FirestoreGameState {
     defenderRollIndex?: number | null;
     attackerValue?: number | null;
     defenderValue?: number | null;
+    attackerModifiers?: CombatModifier[];
+    defenderModifiers?: CombatModifier[];
   } | null;
   winner?: PlayerSide | null;
 }
 
 export type FirestorePlayerCardState = {
-  deckIds: string[];
-  handIds: string[];
-  discardIds: string[];
+  deckInstanceIds?: string[];
+  handInstanceIds?: string[];
+  discardInstanceIds?: string[];
+  deckIds?: string[];
+  handIds?: string[];
+  discardIds?: string[];
   handLimit: number;
 };
 

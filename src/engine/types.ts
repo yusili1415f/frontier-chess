@@ -13,6 +13,7 @@ export type SelectedFactions = {
 export type PlayerDrawState = {
   passiveDrawsUsed: number;
   activeDrawsUsed: number;
+  eligibleCapturedCount: number;
   capturedPiecesCount: number;
   hasDrawnForThreeCaptures: boolean;
   hasDrawnForFirstFrontierCrossing: boolean;
@@ -26,7 +27,9 @@ export type DrawStateBySide = Record<PlayerSide, PlayerDrawState>;
 export type ActiveMoveCard = {
   side: PlayerSide;
   cardId: string;
-  cardName: "Advance";
+  cardName: "Advance" | "Banner Drill";
+  phase?: "selectPiece" | "moveGuard" | "moveCannon";
+  selectedGuardId?: string;
 };
 
 export type PieceType = "King" | "Rook" | "Knight" | "Bishop" | "Cannon" | "Guard" | "Pawn";
@@ -144,6 +147,8 @@ export type ForcedDice = {
   defenderAutoRolled?: boolean;
   attackerUsedGambit?: boolean;
   defenderUsedGambit?: boolean;
+  attackerModifiers?: CombatModifier[];
+  defenderModifiers?: CombatModifier[];
 };
 
 export type PendingCombatStatus =
@@ -185,6 +190,8 @@ export interface PendingCombat {
   defenderUsedGambit?: boolean;
   attackerPassedGambit?: boolean;
   defenderPassedGambit?: boolean;
+  attackerPlayedCardIds?: string[];
+  defenderPlayedCardIds?: string[];
   gambitWindowStartedAt?: number;
   gambitWindowDeadlineAt?: number;
   resultRevealedAt?: number;

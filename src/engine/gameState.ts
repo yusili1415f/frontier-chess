@@ -1,4 +1,4 @@
-import { cloneBoard, coordinateLabel, getPiecePosition, getSquare, setPieceAt } from "./board";
+import { cloneBoard, coordinateLabel, getPiecePosition, getSquare, isInsideBoard, setPieceAt } from "./board";
 import { shouldCannonCaptureUseCombat, shouldTriggerCombat, resolveCombat } from "./combat";
 import { getCombatProfileNameForPiece } from "./data/classProfiles";
 import { classifyMove, getLegalMove, getLegalMovesForPiece } from "./movement";
@@ -91,6 +91,69 @@ export function applyAdvanceMove(state: GameState, pieceId: string, to: Position
   };
 
   return completeActiveMoveCard(finishMove(state, board, state.pieces, record));
+}
+
+export function getBannerDrillMoves(state: GameState, pieceId: string): Position[] {
+  const activeCard = state.activeMoveCard;
+  const piece = state.pieces[pieceId];
+  if (!activeCard || activeCard.cardName !== "Banner Drill" || !piece || piece.side !== activeCard.side) {
+    return [];
+  }
+  if ((activeCard.phase === "selectPiece" || activeCard.phase === "moveGuard") && piece.type === "Guard") {
+    return emptyAdjacentSquares(state, piece, true);
+  }
+  if (activeCard.phase === "moveCannon" && piece.type === "Cannon" && isAdjacentToPiece(state, piece, activeCard.selectedGuardId)) {
+    return emptyOrthogonalSquares(state, piece);
+  }
+  return [];
+}
+
+export function applyBannerDrillMove(state: GameState, pieceId: string, to: Position): GameState {
+  const activeCard = state.activeMoveCard;
+  const piece = state.pieces[pieceId];
+  const legal = getBannerDrillMoves(state, pieceId).some((move) => move.col === to.col && move.row === to.row);
+  if (!activeCard || activeCard.cardName !== "Banner Drill" || !piece || piece.side !== activeCard.side || piece.side !== state.turn || !legal) {
+    return state;
+  }
+  const from = getPiecePosition(state.board, pieceId);
+  if (!from) {
+    return state;
+  }
+  const board = setPieceAt(setPieceAt(cloneBoard(state.board), from, undefined), to, pieceId);
+
+  if (piece.type === "Guard") {
+    const guardMovedState: GameState = {
+      ...state,
+      board,
+      activeMoveCard: {
+        ...activeCard,
+        phase: "moveCannon",
+        selectedGuardId: pieceId,
+      },
+      selectedPieceId: undefined,
+      log: [`${piece.side} Guard moves ${coordinateLabel(from)} -> ${coordinateLabel(to)}.`, ...state.log],
+    };
+    return hasAdjacentFriendlyCannon(guardMovedState, pieceId)
+      ? guardMovedState
+      : completeActiveMoveCard(finishCardMovement(guardMovedState, `${piece.side} Banner Drill ends: no adjacent friendly Cannon.`));
+  }
+
+  if (piece.type === "Cannon") {
+    return completeActiveMoveCard(finishCardMovement({
+      ...state,
+      board,
+      selectedPieceId: undefined,
+      log: [`${piece.side} Cannon moves ${coordinateLabel(from)} -> ${coordinateLabel(to)}.`, ...state.log],
+    }, `${piece.side} Banner Drill complete.`));
+  }
+  return state;
+}
+
+export function skipBannerDrillCannonMove(state: GameState, side: PlayerSide): GameState {
+  if (state.activeMoveCard?.cardName !== "Banner Drill" || state.activeMoveCard.side !== side || state.activeMoveCard.phase !== "moveCannon") {
+    return state;
+  }
+  return completeActiveMoveCard(finishCardMovement(state, `${side} skips Cannon movement.`));
 }
 
 export function applyMove(state: GameState, pieceId: string, move: LegalMove): GameState {
@@ -268,6 +331,8 @@ export function setForcedDice(state: GameState, forcedDice: ForcedDice): GameSta
       defenderRollIndex: forcedDice.defenderRollIndex,
       attackerValue: forcedDice.attackerValue,
       defenderValue: forcedDice.defenderValue,
+      attackerModifiers: forcedDice.attackerModifiers,
+      defenderModifiers: forcedDice.defenderModifiers,
     },
   };
 }
@@ -327,6 +392,62 @@ function formatCombatModifiers(modifiers: CombatModifier[]): string {
 
 function wasPromoted(before: Piece, after: Piece): boolean {
   return !before.promoted && after.promoted === true;
+}
+
+function finishCardMovement(state: GameState, message: string): GameState {
+  return {
+    ...state,
+    log: [message, ...state.log],
+  };
+}
+
+function emptyAdjacentSquares(state: GameState, piece: Piece, includeDiagonals: boolean): Position[] {
+  const from = getPiecePosition(state.board, piece.id);
+  if (!from) {
+    return [];
+  }
+  const moves: Position[] = [];
+  for (let dc = -1; dc <= 1; dc += 1) {
+    for (let dr = -1; dr <= 1; dr += 1) {
+      if (dc === 0 && dr === 0) {
+        continue;
+      }
+      if (!includeDiagonals && Math.abs(dc) + Math.abs(dr) !== 1) {
+        continue;
+      }
+      const to = { col: from.col + dc, row: from.row + dr };
+      if (isInsideBoard(to) && !getSquare(state.board, to)?.pieceId) {
+        moves.push(to);
+      }
+    }
+  }
+  return moves;
+}
+
+function emptyOrthogonalSquares(state: GameState, piece: Piece): Position[] {
+  return emptyAdjacentSquares(state, piece, false);
+}
+
+function isAdjacentToPiece(state: GameState, piece: Piece, targetPieceId?: string): boolean {
+  if (!targetPieceId) {
+    return false;
+  }
+  const from = getPiecePosition(state.board, piece.id);
+  const target = getPiecePosition(state.board, targetPieceId);
+  return Boolean(from && target && Math.abs(from.col - target.col) <= 1 && Math.abs(from.row - target.row) <= 1);
+}
+
+function hasAdjacentFriendlyCannon(state: GameState, guardId: string): boolean {
+  const guard = state.pieces[guardId];
+  if (!guard) {
+    return false;
+  }
+  return Object.values(state.pieces).some((piece) =>
+    piece.side === guard.side &&
+    piece.type === "Cannon" &&
+    isAdjacentToPiece(state, piece, guardId) &&
+    emptyOrthogonalSquares(state, piece).length > 0
+  );
 }
 
 export { getPiecePosition };

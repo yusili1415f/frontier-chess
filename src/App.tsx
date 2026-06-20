@@ -23,9 +23,9 @@ import { AiMode, SimulationPanel } from "./components/panels/SimulationPanel";
 import { FactionPanel } from "./components/panels/FactionPanel";
 import { ScenarioPanel } from "./components/ScenarioPanel";
 import { APP_BUILD_LABEL } from "./appVersion";
-import { cancelActiveMoveCard, getAdvanceMoves, moveCardFromHandToDiscard, playCard, rebuildCardsForSelectedFactions } from "./engine/cards/cardEngine";
+import { cancelActiveMoveCard, cardDefinitionId, getAdvanceMoves, moveCardFromHandToDiscard, playCard, rebuildCardsForSelectedFactions } from "./engine/cards/cardEngine";
 import { AIPlayOptions, AIStatus, GameMode, getNextSwitchedMode, isAITurn, isHumanTurn } from "./engine/ai/aiTurn";
-import { applyAdvanceMove, applyMove, createInitialGameState, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice } from "./engine/gameState";
+import { applyAdvanceMove, applyBannerDrillMove, applyMove, createInitialGameState, getBannerDrillMoves, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice, skipBannerDrillCannonMove } from "./engine/gameState";
 import { annotateLastMove, createGameSnapshot, GameHistoryEntry, GameSnapshot, MoveActor } from "./engine/history";
 import { clampReplayIndex, createReplaySnapshots, getReplaySnapshot, ReplayState } from "./engine/replay";
 import { createScenario, ScenarioId } from "./engine/scenarios";
@@ -40,9 +40,11 @@ import {
   autoRollExpiredPendingCombat,
   canSideRollPendingCombat,
   canSideUseGambit,
+  canPlayBeforeCombatCard,
   createPendingCombat,
   passPendingCombatGambit,
   pendingCombatToForcedDice,
+  playBeforeCombatCard,
   playPendingCombatGambit,
   rollPendingCombatSide,
 } from "./engine/pendingCombat";
@@ -60,6 +62,7 @@ import {
   submitOnlineCombatRoll,
   submitOnlineGambitResponse,
   submitOnlineMove,
+  submitOnlineSkipBannerDrillCannon,
   subscribeToOnlineGame,
 } from "./services/onlineGameService";
 import { OnlineGameDocument, OnlineGameViewDocument, OnlinePlayerRole, OnlineRematchSideMode } from "./engine/online/onlineTypes";
@@ -127,6 +130,7 @@ export function App() {
     onlineRole === state.turn &&
     !state.winner;
   const pendingCombat = onlineGame?.pendingCombat ?? pendingCombatContext?.pendingCombat;
+  const cardPanelState = pendingCombatContext?.beforeState ?? displayState;
   const humanTurn = !pendingCombat && !replay.active && (
     onlineActive
       ? onlineCanMove
@@ -138,8 +142,11 @@ export function App() {
     }
     if (state.activeMoveCard && state.selectedPieceId) {
       const from = state.board.flat().find((square) => square.pieceId === state.selectedPieceId)?.position;
+      const moves = state.activeMoveCard.cardName === "Banner Drill"
+        ? getBannerDrillMoves(state, state.selectedPieceId)
+        : getAdvanceMoves(state, state.selectedPieceId);
       return from
-        ? getAdvanceMoves(state, state.selectedPieceId).map((to) => ({ from, to, kind: "move" as const }))
+        ? moves.map((to) => ({ from, to, kind: "move" as const }))
         : [];
     }
     return getSelectedLegalMoves(state);
@@ -348,15 +355,19 @@ export function App() {
     }
 
     if (state.activeMoveCard) {
-      const rawAfter = applyAdvanceMove(state, state.selectedPieceId, position);
-      if (rawAfter !== state && rawAfter.lastMove) {
+      const rawAfter = state.activeMoveCard.cardName === "Banner Drill"
+        ? applyBannerDrillMove(state, state.selectedPieceId, position)
+        : applyAdvanceMove(state, state.selectedPieceId, position);
+      if (rawAfter !== state) {
         const beforeSnapshot = createGameSnapshot(state, aiMoveExplanation, playOutcome);
         const after = annotateLastMove(rawAfter, "Human");
         const afterSnapshot = createGameSnapshot(after, undefined, undefined);
         setState(after);
         setAIMoveExplanation(undefined);
         setPlayOutcome(undefined);
-        setHistoryEntries((entries) => [...entries, { actor: "Human", before: beforeSnapshot, after: afterSnapshot, record: after.lastMove! }]);
+        if (after.lastMove) {
+          setHistoryEntries((entries) => [...entries, { actor: "Human", before: beforeSnapshot, after: afterSnapshot, record: after.lastMove! }]);
+        }
         setReplay({ active: false, index: historyEntries.length + 1 });
       }
       return;
@@ -517,10 +528,24 @@ export function App() {
 
   function handlePlayCard(side: PlayerSide, cardId: string) {
     if (onlineActive) {
-      if (!onlineGameId || !onlinePlayerId || side !== onlineRole || side !== state.turn) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
         return;
       }
       submitOnlineCardPlay(onlineGameId, onlinePlayerId, cardId).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    if (pendingCombatContext) {
+      setPendingCombatContext((current) => {
+        if (!current || !canPlayBeforeCombatCard(current.pendingCombat, current.beforeState, side, cardId)) {
+          return current;
+        }
+        const played = playBeforeCombatCard(current.pendingCombat, current.beforeState, side, cardId);
+        return {
+          ...current,
+          beforeState: played.gameState,
+          pendingCombat: played.pendingCombat,
+        };
+      });
       return;
     }
     if (replay.active || pendingCombat || side !== state.turn) {
@@ -538,6 +563,17 @@ export function App() {
       return;
     }
     setState((current) => cancelActiveMoveCard(current, current.turn));
+  }
+
+  function handleSkipBannerDrillCannon() {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || onlineRole !== state.turn) {
+        return;
+      }
+      submitOnlineSkipBannerDrillCannon(onlineGameId, onlinePlayerId).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setState((current) => skipBannerDrillCannonMove(current, current.turn));
   }
 
   function handleGameModeChange(nextMode: GameMode) {
@@ -893,10 +929,12 @@ export function App() {
             selectedFactions={displayState.selectedFactions}
           />
           <CardPanel
-            canAct={humanTurn && !replay.active}
+            canAct={(humanTurn || Boolean(pendingCombat)) && !replay.active}
             onCancelAdvance={handleCancelAdvance}
             onPlayCard={handlePlayCard}
-            state={displayState}
+            onSkipBannerDrillCannon={handleSkipBannerDrillCannon}
+            pendingCombat={pendingCombat}
+            state={cardPanelState}
           />
           <DisplaySettingsPanel
             combatRollMode={combatRollMode}

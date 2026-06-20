@@ -1925,9 +1925,9 @@ function validatesOnlineCardStateSerialization(): boolean {
   const state = drawCard(createInitialGameState(), "Blue");
   const serialized = serializeGameStateForFirestore(state);
   const restored = deserializeGameStateFromFirestore(serialized);
-  return serialized.cards?.Blue.deckIds.length === 6 &&
-    serialized.cards.Blue.handIds[0] === "basic_gambit" &&
-    restored.cards.Blue.hand[0].name === "Gambit";
+  return serialized.cards?.Blue.deckInstanceIds?.length === 6 &&
+    serialized.cards.Blue.handInstanceIds?.[0] === "basic_advance" &&
+    restored.cards.Blue.hand[0].name === "Advance";
 }
 
 function validatesMissingCardStateDefaults(): boolean {
