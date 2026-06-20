@@ -23,9 +23,9 @@ import { AiMode, SimulationPanel } from "./components/panels/SimulationPanel";
 import { FactionPanel } from "./components/panels/FactionPanel";
 import { ScenarioPanel } from "./components/ScenarioPanel";
 import { APP_BUILD_LABEL } from "./appVersion";
-import { cancelActiveMoveCard, cardDefinitionId, getAdvanceMoves, moveCardFromHandToDiscard, playCard, rebuildCardsForSelectedFactions } from "./engine/cards/cardEngine";
+import { cancelActiveMoveCard, completeActiveMoveCard, getAdvanceMoves, moveCardFromHandToDiscard, playCard, rebuildCardsForSelectedFactions, voluntaryDiscardCards } from "./engine/cards/cardEngine";
 import { AIPlayOptions, AIStatus, GameMode, getNextSwitchedMode, isAITurn, isHumanTurn } from "./engine/ai/aiTurn";
-import { applyAdvanceMove, applyBannerDrillMove, applyMove, createInitialGameState, getBannerDrillMoves, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice, skipBannerDrillCannonMove } from "./engine/gameState";
+import { applyAdvanceMove, applyBannerDrillMove, applyCrownbreakerPostCombatMove, applyIronCrownActiveMove, applyMove, createInitialGameState, getBannerDrillMoves, getCrownbreakerPostCombatMoves, getIronCrownActiveMoves, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice, skipBannerDrillCannonMove, skipCrownbreakerPostCombatMove } from "./engine/gameState";
 import { annotateLastMove, createGameSnapshot, GameHistoryEntry, GameSnapshot, MoveActor } from "./engine/history";
 import { clampReplayIndex, createReplaySnapshots, getReplaySnapshot, ReplayState } from "./engine/replay";
 import { createScenario, ScenarioId } from "./engine/scenarios";
@@ -38,15 +38,19 @@ import { getKingThreats } from "./engine/kingThreat";
 import { deriveLastMoveHighlight } from "./engine/lastMoveHighlight";
 import {
   autoRollExpiredPendingCombat,
+  attachBreakthroughCharge,
+  attachCrownbreakerCharge,
   canSideRollPendingCombat,
   canSideUseGambit,
   canPlayBeforeCombatCard,
   createPendingCombat,
+  declineBreakthroughChargeReroll,
   passPendingCombatGambit,
   pendingCombatToForcedDice,
   playBeforeCombatCard,
   playPendingCombatGambit,
   rollPendingCombatSide,
+  useBreakthroughChargeReroll,
 } from "./engine/pendingCombat";
 import { runRuleValidation } from "./engine/validation";
 import {
@@ -62,7 +66,10 @@ import {
   submitOnlineCombatRoll,
   submitOnlineGambitResponse,
   submitOnlineMove,
+  submitOnlineBreakthroughResponse,
   submitOnlineSkipBannerDrillCannon,
+  submitOnlineSkipCrownbreakerPostCombat,
+  submitOnlineVoluntaryDiscard,
   subscribeToOnlineGame,
 } from "./services/onlineGameService";
 import { OnlineGameDocument, OnlineGameViewDocument, OnlinePlayerRole, OnlineRematchSideMode } from "./engine/online/onlineTypes";
@@ -136,18 +143,30 @@ export function App() {
       ? onlineCanMove
       : isHumanTurn(state, gameMode) && !reachedMaxTurns && !playOutcome
   );
+  const discardControlSide: PlayerSide | undefined = pendingCombat || replay.active || state.activeMoveCard
+    ? undefined
+    : onlineActive
+      ? onlineRole === "Blue" || onlineRole === "Red"
+        ? onlineRole === state.turn ? onlineRole : undefined
+        : undefined
+      : humanTurn ? state.turn : undefined;
   const legalMoves = useMemo(() => {
     if (!humanTurn) {
       return [];
     }
     if (state.activeMoveCard && state.selectedPieceId) {
       const from = state.board.flat().find((square) => square.pieceId === state.selectedPieceId)?.position;
+      if (!from) {
+        return [];
+      }
       const moves = state.activeMoveCard.cardName === "Banner Drill"
-        ? getBannerDrillMoves(state, state.selectedPieceId)
-        : getAdvanceMoves(state, state.selectedPieceId);
-      return from
-        ? moves.map((to) => ({ from, to, kind: "move" as const }))
-        : [];
+        ? getBannerDrillMoves(state, state.selectedPieceId).map((to) => ({ from, to, kind: "move" as const }))
+        : state.activeMoveCard.cardName === "Crownbreaker Charge" && state.activeMoveCard.phase === "postCombatMove"
+          ? getCrownbreakerPostCombatMoves(state, state.selectedPieceId).map((to) => ({ from, to, kind: "move" as const }))
+          : state.activeMoveCard.cardName === "Breakthrough Charge" || state.activeMoveCard.cardName === "Crownbreaker Charge"
+            ? getIronCrownActiveMoves(state, state.selectedPieceId)
+            : getAdvanceMoves(state, state.selectedPieceId).map((to) => ({ from, to, kind: "move" as const }));
+      return moves;
     }
     return getSelectedLegalMoves(state);
   }, [humanTurn, state]);
@@ -222,7 +241,7 @@ export function App() {
         Date.now() >= (pendingCombatContext.pendingCombat.gambitWindowDeadlineAt ?? Number.POSITIVE_INFINITY))
     ) {
       setPendingCombatContext((current) => current
-        ? { ...current, pendingCombat: autoRollExpiredPendingCombat(current.pendingCombat) }
+        ? { ...current, pendingCombat: autoRollExpiredPendingCombat(current.pendingCombat, Date.now(), current.beforeState) }
         : current);
     }
   }, [pendingCombatContext, pendingCombatNow]);
@@ -355,25 +374,103 @@ export function App() {
     }
 
     if (state.activeMoveCard) {
-      const rawAfter = state.activeMoveCard.cardName === "Banner Drill"
-        ? applyBannerDrillMove(state, state.selectedPieceId, position)
-        : applyAdvanceMove(state, state.selectedPieceId, position);
-      if (rawAfter !== state) {
-        const beforeSnapshot = createGameSnapshot(state, aiMoveExplanation, playOutcome);
-        const after = annotateLastMove(rawAfter, "Human");
-        const afterSnapshot = createGameSnapshot(after, undefined, undefined);
-        setState(after);
-        setAIMoveExplanation(undefined);
-        setPlayOutcome(undefined);
-        if (after.lastMove) {
-          setHistoryEntries((entries) => [...entries, { actor: "Human", before: beforeSnapshot, after: afterSnapshot, record: after.lastMove! }]);
-        }
-        setReplay({ active: false, index: historyEntries.length + 1 });
-      }
+      applyTrackedActiveCardMove(position);
       return;
     }
 
     applyTrackedMove("Human", state.selectedPieceId, position);
+  }
+
+  function applyTrackedActiveCardMove(position: Position): boolean {
+    if (!state.selectedPieceId || !state.activeMoveCard) {
+      return false;
+    }
+
+    const beforeSnapshot = createGameSnapshot(state, aiMoveExplanation, playOutcome);
+    const activeCard = state.activeMoveCard;
+
+    if (activeCard.cardName === "Crownbreaker Charge" && activeCard.phase === "postCombatMove") {
+      return applyTrackedCardState(applyCrownbreakerPostCombatMove(state, state.selectedPieceId, position), beforeSnapshot);
+    }
+
+    if (activeCard.cardName === "Breakthrough Charge" || activeCard.cardName === "Crownbreaker Charge") {
+      const legalMove = getIronCrownActiveMoves(state, state.selectedPieceId).find((move) => move.to.col === position.col && move.to.row === position.row);
+      if (!legalMove) {
+        return false;
+      }
+      const attacker = state.pieces[state.selectedPieceId];
+      const defender = pieceAt(state, legalMove.to);
+
+      if (attacker && defender && legalMove.classification?.kind === "combatCapture") {
+        const beforeState = prepareIronCrownPendingCombatState(state);
+        let pendingCombat = createPendingCombat(beforeState, legalMove, attacker, defender);
+        pendingCombat = activeCard.cardName === "Breakthrough Charge"
+          ? attachBreakthroughCharge(pendingCombat, activeCard.side, attacker.id, activeCard.cardId)
+          : attachCrownbreakerCharge(pendingCombat, activeCard.side, attacker.id, activeCard.cardId);
+        cancelPendingAI();
+        setPendingCombatContext({
+          actor: "Human",
+          beforeSnapshot,
+          beforeState,
+          move: legalMove,
+          pendingCombat,
+          pieceId: state.selectedPieceId,
+        });
+        setState({ ...beforeState, selectedPieceId: undefined });
+        setAIStatus("idle");
+        return true;
+      }
+
+      return applyTrackedCardState(applyIronCrownActiveMove(state, state.selectedPieceId, legalMove), beforeSnapshot);
+    }
+
+    const rawAfter = activeCard.cardName === "Banner Drill"
+      ? applyBannerDrillMove(state, state.selectedPieceId, position)
+      : applyAdvanceMove(state, state.selectedPieceId, position);
+    return applyTrackedCardState(rawAfter, beforeSnapshot);
+  }
+
+  function prepareIronCrownPendingCombatState(gameState: GameState): GameState {
+    const activeCard = gameState.activeMoveCard;
+    if (!activeCard) {
+      return gameState;
+    }
+    if (activeCard.cardName === "Breakthrough Charge") {
+      const discarded = moveCardFromHandToDiscard(gameState, activeCard.side, activeCard.cardId);
+      return {
+        ...discarded,
+        activeMoveCard: undefined,
+        selectedPieceId: undefined,
+        log: [`${activeCard.side} Breakthrough Charge movement completed.`, ...discarded.log],
+      };
+    }
+    return {
+      ...gameState,
+      selectedPieceId: undefined,
+      activeMoveCard: {
+        ...activeCard,
+        phase: "selectDestination",
+      },
+    };
+  }
+
+  function applyTrackedCardState(rawAfter: GameState, beforeSnapshot: GameSnapshot): boolean {
+    if (rawAfter === state) {
+      return false;
+    }
+    const after = annotateLastMove(rawAfter, "Human");
+    const afterSnapshot = createGameSnapshot(after, undefined, undefined);
+    setState(after);
+    setAIMoveExplanation(undefined);
+    setPlayOutcome(undefined);
+    if (after.lastMove) {
+      setHistoryEntries((entries) => {
+        const nextEntries = [...entries, { actor: "Human" as const, before: beforeSnapshot, after: afterSnapshot, record: after.lastMove! }];
+        setReplay({ active: false, index: nextEntries.length });
+        return nextEntries;
+      });
+    }
+    return true;
   }
 
   function applyTrackedMove(actor: MoveActor, pieceId: string, to: Position, scoreChoice?: ScoredMoveChoice): boolean {
@@ -574,6 +671,32 @@ export function App() {
       return;
     }
     setState((current) => skipBannerDrillCannonMove(current, current.turn));
+  }
+
+  function handleSkipCrownbreakerPostCombat() {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId) {
+        return;
+      }
+      submitOnlineSkipCrownbreakerPostCombat(onlineGameId, onlinePlayerId).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    const beforeSnapshot = createGameSnapshot(state, aiMoveExplanation, playOutcome);
+    applyTrackedCardState(skipCrownbreakerPostCombatMove(state, state.activeMoveCard?.side ?? state.turn), beforeSnapshot);
+  }
+
+  function handleVoluntaryDiscard(side: PlayerSide, cardIds: string[]) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || onlineRole !== side || side !== state.turn) {
+        return;
+      }
+      submitOnlineVoluntaryDiscard(onlineGameId, onlinePlayerId, cardIds).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    if (pendingCombat || replay.active || state.activeMoveCard || side !== state.turn) {
+      return;
+    }
+    setState((current) => voluntaryDiscardCards(current, side, cardIds));
   }
 
   function handleGameModeChange(nextMode: GameMode) {
@@ -872,6 +995,32 @@ export function App() {
       : current);
   }
 
+  function useBreakthrough(side: PlayerSide) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineBreakthroughResponse(onlineGameId, onlinePlayerId, side, "reroll").catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => current
+      ? { ...current, pendingCombat: useBreakthroughChargeReroll(current.pendingCombat, side, current.beforeState) }
+      : current);
+  }
+
+  function keepBreakthrough(side: PlayerSide) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineBreakthroughResponse(onlineGameId, onlinePlayerId, side, "keep").catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => current
+      ? { ...current, pendingCombat: declineBreakthroughChargeReroll(current.pendingCombat, current.beforeState) }
+      : current);
+  }
+
   function resolvePendingLocalCombat() {
     setPendingCombatContext((current) => {
       if (!current || current.pendingCombat.status !== "revealingResult") {
@@ -879,15 +1028,16 @@ export function App() {
       }
 
       const forcedDice = pendingCombatToForcedDice(current.pendingCombat);
-      const rawAfter = applyMove(
+      const resolvedAfter = applyMove(
         { ...current.beforeState, forcedDice: { ...current.beforeState.forcedDice, ...forcedDice, manualRoll: true } },
         current.pieceId,
         current.move,
       );
-      if (rawAfter === current.beforeState || !rawAfter.lastMove) {
+      if (resolvedAfter === current.beforeState || !resolvedAfter.lastMove) {
         return undefined;
       }
 
+      const rawAfter = prepareCrownbreakerAfterCombat(current.pendingCombat, resolvedAfter);
       const after = annotateLastMove({ ...rawAfter, forcedDice: current.beforeState.forcedDice }, current.actor);
       const explanation = current.actor === "AI" && current.scoreChoice
         ? {
@@ -917,6 +1067,38 @@ export function App() {
     });
   }
 
+  function prepareCrownbreakerAfterCombat(pendingCombat: PendingCombat, resolvedState: GameState): GameState {
+    const crown = pendingCombat.crownbreakerState;
+    if (!crown || !resolvedState.activeMoveCard || resolvedState.activeMoveCard.cardName !== "Crownbreaker Charge") {
+      return resolvedState;
+    }
+    const won = pendingCombat.winnerSide === crown.side && Boolean(resolvedState.pieces[crown.knightPieceId]);
+    if (!won || resolvedState.winner) {
+      return completeActiveMoveCard({
+        ...resolvedState,
+        log: [`${crown.side} Crownbreaker Charge complete.`, ...resolvedState.log],
+      });
+    }
+    const postState = {
+      ...resolvedState,
+      turn: crown.side,
+      activeMoveCard: {
+        ...resolvedState.activeMoveCard,
+        phase: "postCombatMove" as const,
+        selectedPieceId: crown.knightPieceId,
+        captureCountThisTurn: 1,
+      },
+      selectedPieceId: crown.knightPieceId,
+      log: [`${crown.side} Knight wins combat. Crownbreaker post-combat move available.`, ...resolvedState.log],
+    };
+    return getCrownbreakerPostCombatMoves(postState, crown.knightPieceId).length
+      ? postState
+      : completeActiveMoveCard({
+          ...resolvedState,
+          log: [`${crown.side} Crownbreaker Charge complete: no adjacent empty square.`, ...resolvedState.log],
+        });
+  }
+
   return (
     <AppLayout
       className={mobileBoardLockMode === "locked" ? "mobile-board-locked" : "mobile-board-unlocked"}
@@ -930,11 +1112,15 @@ export function App() {
           />
           <CardPanel
             canAct={(humanTurn || Boolean(pendingCombat)) && !replay.active}
+            discardControlSide={discardControlSide}
             onCancelAdvance={handleCancelAdvance}
             onPlayCard={handlePlayCard}
             onSkipBannerDrillCannon={handleSkipBannerDrillCannon}
+            onSkipCrownbreakerPostCombat={handleSkipCrownbreakerPostCombat}
+            onVoluntaryDiscard={handleVoluntaryDiscard}
             pendingCombat={pendingCombat}
             state={cardPanelState}
+            visibleHandSide={onlineActive ? onlineRole : "Both"}
           />
           <DisplaySettingsPanel
             combatRollMode={combatRollMode}
@@ -1049,9 +1235,11 @@ export function App() {
           </div>
           <CombatRollPanel
             currentRoller={getCurrentRoller(gameMode, onlineActive, onlineRole ?? null)}
+            onKeepBreakthrough={keepBreakthrough}
             onPassGambit={passGambit}
             onPlayGambit={playGambit}
             onRoll={rollPendingCombat}
+            onUseBreakthrough={useBreakthrough}
             pendingCombat={pendingCombat}
             resolveSecondsRemaining={Math.max(0, Math.ceil(((pendingCombat?.resolveAfterAt ?? 0) - pendingCombatNow) / 1000))}
             secondsRemaining={Math.max(0, Math.ceil(((pendingCombat?.rollDeadlineAt ?? 0) - pendingCombatNow) / 1000))}

@@ -3,7 +3,7 @@ import { GameState, Piece, PieceType, PlayerSide, Position } from "./types";
 import { createInitialGameState } from "./gameState";
 import { applyPromotionIfNeeded } from "./promotion";
 import { DEFAULT_SELECTED_FACTIONS } from "../data/factions/testFactions";
-import { createDefaultCards, createDefaultDrawState } from "./cards/cardEngine";
+import { createDefaultCards, createDefaultDrawState, createDefaultTurnActions } from "./cards/cardEngine";
 
 export type ScenarioId =
   | "standard"
@@ -194,6 +194,7 @@ function scenarioState(entries: Array<Piece & { position: Position }>, turn: Pla
     selectedFactions,
     cards: createDefaultCards(selectedFactions),
     drawState: createDefaultDrawState(),
+    turnActions: createDefaultTurnActions(),
     selectedPieceId: entries[0]?.id,
     log: ["Scenario loaded."],
     moveHistory: [],

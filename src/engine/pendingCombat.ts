@@ -36,6 +36,59 @@ export function createPendingCombat(
   };
 }
 
+export function attachBreakthroughCharge(
+  pendingCombat: PendingCombat,
+  side: PlayerSide,
+  knightPieceId: string,
+  cardInstanceId: string,
+): PendingCombat {
+  if (side !== pendingCombat.attackerSide || knightPieceId !== pendingCombat.attackerPieceId) {
+    return pendingCombat;
+  }
+  return {
+    ...pendingCombat,
+    breakthroughState: {
+      side,
+      knightPieceId,
+      cardInstanceId,
+      rerollUsed: false,
+      rerollDeclined: false,
+    },
+  };
+}
+
+export function attachCrownbreakerCharge(
+  pendingCombat: PendingCombat,
+  side: PlayerSide,
+  knightPieceId: string,
+  cardInstanceId: string,
+): PendingCombat {
+  if (side !== pendingCombat.attackerSide || knightPieceId !== pendingCombat.attackerPieceId) {
+    return pendingCombat;
+  }
+  const modifier = {
+    source: "Crownbreaker Charge",
+    side,
+    pieceId: knightPieceId,
+    value: 1,
+    description: "+1 to attacking Knight combat result",
+  };
+  return recalculatePendingCombatValues({
+    ...pendingCombat,
+    attackerModifiers: [...(pendingCombat.attackerModifiers ?? []), modifier],
+    attackerPlayedCardIds: [...(pendingCombat.attackerPlayedCardIds ?? []), "crownbreaker_charge"],
+    crownbreakerState: {
+      side,
+      knightPieceId,
+      cardInstanceId,
+      combatModifierApplied: true,
+      postCombatMoveAvailable: false,
+      postCombatMoveUsed: false,
+      captureCountThisTurn: 1,
+    },
+  });
+}
+
 export function rollPendingCombatSide(
   pendingCombat: PendingCombat,
   side: PlayerSide,
@@ -70,7 +123,11 @@ export function rollPendingCombatSide(
   return pendingCombat;
 }
 
-export function autoRollExpiredPendingCombat(pendingCombat: PendingCombat, now = Date.now()): PendingCombat {
+export function autoRollExpiredPendingCombat(pendingCombat: PendingCombat, now = Date.now(), gameState?: GameState): PendingCombat {
+  if (pendingCombat.status === "breakthroughWindow") {
+    return declineBreakthroughChargeReroll(pendingCombat, gameState);
+  }
+
   if (pendingCombat.status === "gambitWindow" && now >= (pendingCombat.gambitWindowDeadlineAt ?? Number.POSITIVE_INFINITY)) {
     return revealPendingCombat({
       ...pendingCombat,
@@ -120,6 +177,61 @@ export function pendingCombatToForcedDice(pendingCombat: PendingCombat) {
     attackerModifiers: pendingCombat.attackerModifiers,
     defenderModifiers: pendingCombat.defenderModifiers,
   };
+}
+
+export function canUseBreakthroughChargeReroll(pendingCombat: PendingCombat, side: PlayerSide): boolean {
+  const state = pendingCombat.breakthroughState;
+  return pendingCombat.status === "breakthroughWindow" &&
+    state?.side === side &&
+    !state.rerollUsed &&
+    !state.rerollDeclined &&
+    side === pendingCombat.attackerSide &&
+    pendingCombat.attackerDieIndex !== undefined;
+}
+
+export function useBreakthroughChargeReroll(
+  pendingCombat: PendingCombat,
+  side: PlayerSide,
+  gameState?: GameState,
+  options: { dieIndex?: number } = {},
+): PendingCombat {
+  if (!canUseBreakthroughChargeReroll(pendingCombat, side)) {
+    return pendingCombat;
+  }
+  const dieIndex = clampDieIndex(options.dieIndex ?? rollDieIndex());
+  const next = recalculatePendingCombatValues({
+    ...pendingCombat,
+    attackerOriginalDieIndex: pendingCombat.attackerOriginalDieIndex ?? pendingCombat.attackerDieIndex,
+    attackerOriginalProfileValue: pendingCombat.attackerOriginalProfileValue ?? pendingCombat.attackerProfileValue,
+    attackerDieIndex: dieIndex,
+    attackerProfileValue: pendingCombat.attackerProfile[dieIndex],
+    breakthroughState: pendingCombat.breakthroughState
+      ? {
+          ...pendingCombat.breakthroughState,
+          originalDieIndex: pendingCombat.breakthroughState.originalDieIndex ?? pendingCombat.attackerDieIndex,
+          originalProfileValue: pendingCombat.breakthroughState.originalProfileValue ?? pendingCombat.attackerProfileValue,
+          rerolledDieIndex: dieIndex,
+          rerolledProfileValue: pendingCombat.attackerProfile[dieIndex],
+          rerollUsed: true,
+          rerollDeclined: false,
+        }
+      : pendingCombat.breakthroughState,
+  });
+  return continueAfterBreakthrough(next, gameState);
+}
+
+export function declineBreakthroughChargeReroll(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
+  const state = pendingCombat.breakthroughState;
+  if (pendingCombat.status !== "breakthroughWindow" || !state || state.rerollUsed || state.rerollDeclined) {
+    return pendingCombat;
+  }
+  return continueAfterBreakthrough({
+    ...pendingCombat,
+    breakthroughState: {
+      ...state,
+      rerollDeclined: true,
+    },
+  }, gameState);
 }
 
 export function canSideUseGambit(pendingCombat: PendingCombat, gameState: GameState, side: PlayerSide): boolean {
@@ -212,6 +324,13 @@ export function canPlayBeforeCombatCard(
       piece.type === "Guard" &&
       isAdjacentToFriendlyPiece(gameState, piece);
   }
+  if (definitionId === "lance_formation") {
+    return gameState.selectedFactions[side] === "iron_crown_cavalry" &&
+      side === pendingCombat.attackerSide &&
+      piece.id === pendingCombat.attackerPieceId &&
+      piece.type === "Knight" &&
+      !hasPlayedCardDefinition(pendingCombat, side, "lance_formation");
+  }
   return false;
 }
 
@@ -235,10 +354,14 @@ export function playBeforeCombatCard(
     return { pendingCombat, gameState };
   }
   const value = definitionId === "guan_dao_champion" ? 2 : 1;
-  const source = definitionId === "guan_dao_champion" ? "Guan Dao Champion" : "Dragon Formation";
+  const source = definitionId === "guan_dao_champion"
+    ? "Guan Dao Champion"
+    : definitionId === "lance_formation" ? "Lance Formation" : "Dragon Formation";
   const description = definitionId === "guan_dao_champion"
     ? "+2 to Guard combat result"
-    : `+1 because ${side} ${piece.type} is adjacent to a friendly Guard`;
+    : definitionId === "lance_formation"
+      ? "+1 to attacking Knight combat result"
+      : `+1 because ${side} ${piece.type} is adjacent to a friendly Guard`;
   const modifier = {
     source,
     side,
@@ -298,6 +421,12 @@ export function canSideRollPendingCombat(pendingCombat: PendingCombat, side: Pla
 
 function withStatus(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
   if (pendingCombat.attackerDieIndex !== undefined && pendingCombat.defenderDieIndex !== undefined) {
+    if (shouldOpenBreakthroughWindow(pendingCombat)) {
+      return {
+        ...pendingCombat,
+        status: "breakthroughWindow",
+      };
+    }
     if (gameState && hasAnyGambitEligible(pendingCombat, gameState)) {
       const startedAt = Date.now();
       return {
@@ -350,6 +479,34 @@ function withGambitResponse(pendingCombat: PendingCombat): PendingCombat {
   const attackerDone = pendingCombat.attackerUsedGambit || pendingCombat.attackerPassedGambit;
   const defenderDone = pendingCombat.defenderUsedGambit || pendingCombat.defenderPassedGambit;
   return attackerDone && defenderDone ? revealPendingCombat(pendingCombat) : pendingCombat;
+}
+
+function continueAfterBreakthrough(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
+  if (gameState && hasAnyGambitEligible(pendingCombat, gameState)) {
+    const startedAt = Date.now();
+    return {
+      ...pendingCombat,
+      status: "gambitWindow",
+      gambitWindowStartedAt: startedAt,
+      gambitWindowDeadlineAt: startedAt + GAMBIT_RESPONSE_WINDOW_MS,
+      attackerPassedGambit: pendingCombat.attackerPassedGambit ||
+        !hasCardInHand(gameState, pendingCombat.attackerSide, "basic_gambit"),
+      defenderPassedGambit: pendingCombat.defenderPassedGambit ||
+        !hasCardInHand(gameState, pendingCombat.defenderSide, "basic_gambit"),
+    };
+  }
+  return revealPendingCombat(pendingCombat);
+}
+
+function shouldOpenBreakthroughWindow(pendingCombat: PendingCombat): boolean {
+  const state = pendingCombat.breakthroughState;
+  return Boolean(
+    state &&
+    state.side === pendingCombat.attackerSide &&
+    state.knightPieceId === pendingCombat.attackerPieceId &&
+    !state.rerollUsed &&
+    !state.rerollDeclined,
+  );
 }
 
 function hasPlayedCardDefinition(pendingCombat: PendingCombat, side: PlayerSide, definitionId: string): boolean {

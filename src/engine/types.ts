@@ -24,12 +24,21 @@ export type CardStateBySide = Record<PlayerSide, PlayerCardState>;
 
 export type DrawStateBySide = Record<PlayerSide, PlayerDrawState>;
 
+export type PlayerTurnActionState = {
+  voluntaryDiscardUsedThisTurn: boolean;
+};
+
+export type TurnActionStateBySide = Record<PlayerSide, PlayerTurnActionState>;
+
 export type ActiveMoveCard = {
   side: PlayerSide;
   cardId: string;
-  cardName: "Advance" | "Banner Drill";
-  phase?: "selectPiece" | "moveGuard" | "moveCannon";
+  cardDefinitionId?: string;
+  cardName: "Advance" | "Banner Drill" | "Breakthrough Charge" | "Crownbreaker Charge";
+  phase?: "selectPiece" | "moveGuard" | "moveCannon" | "selectDestination" | "postCombatMove";
   selectedGuardId?: string;
+  selectedPieceId?: string;
+  captureCountThisTurn?: number;
 };
 
 export type PieceType = "King" | "Rook" | "Knight" | "Bishop" | "Cannon" | "Guard" | "Pawn";
@@ -155,6 +164,7 @@ export type PendingCombatStatus =
   | "waitingForAttackerRoll"
   | "waitingForDefenderRoll"
   | "waitingForBothRolls"
+  | "breakthroughWindow"
   | "gambitWindow"
   | "revealingResult"
   | "resolved";
@@ -192,6 +202,26 @@ export interface PendingCombat {
   defenderPassedGambit?: boolean;
   attackerPlayedCardIds?: string[];
   defenderPlayedCardIds?: string[];
+  breakthroughState?: {
+    side: PlayerSide;
+    knightPieceId: string;
+    cardInstanceId: string;
+    originalDieIndex?: number;
+    originalProfileValue?: number;
+    rerolledDieIndex?: number;
+    rerolledProfileValue?: number;
+    rerollUsed?: boolean;
+    rerollDeclined?: boolean;
+  };
+  crownbreakerState?: {
+    side: PlayerSide;
+    knightPieceId: string;
+    cardInstanceId: string;
+    combatModifierApplied: boolean;
+    postCombatMoveAvailable?: boolean;
+    postCombatMoveUsed?: boolean;
+    captureCountThisTurn: number;
+  };
   gambitWindowStartedAt?: number;
   gambitWindowDeadlineAt?: number;
   resultRevealedAt?: number;
@@ -230,6 +260,7 @@ export type GameState = {
   selectedFactions: SelectedFactions;
   cards: CardStateBySide;
   drawState: DrawStateBySide;
+  turnActions: TurnActionStateBySide;
   activeMoveCard?: ActiveMoveCard;
   selectedPieceId?: string;
   log: string[];

@@ -81,6 +81,10 @@ export function cloneGameState(state: GameState): GameState {
       Blue: { ...state.drawState.Blue },
       Red: { ...state.drawState.Red },
     },
+    turnActions: {
+      Blue: { ...state.turnActions.Blue },
+      Red: { ...state.turnActions.Red },
+    },
     log: [...state.log],
     moveHistory: state.moveHistory.map(cloneMoveRecord),
     lastMove: state.lastMove ? cloneMoveRecord(state.lastMove) : undefined,

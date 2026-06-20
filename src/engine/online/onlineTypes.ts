@@ -1,5 +1,5 @@
 import { MoveActor } from "../history";
-import { ActiveMoveCard, CombatModifier, DrawStateBySide, GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position, SelectedFactions } from "../types";
+import { ActiveMoveCard, CombatModifier, DrawStateBySide, GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position, SelectedFactions, TurnActionStateBySide } from "../types";
 
 export type OnlineGameStatus = "waiting" | "active" | "finished";
 export type OnlineGameVersion = "core" | "faction";
@@ -61,6 +61,8 @@ export type FirestorePendingCombat = {
   defenderPassedGambit?: boolean | null;
   attackerPlayedCardIds?: string[];
   defenderPlayedCardIds?: string[];
+  breakthroughState?: PendingCombat["breakthroughState"] | null;
+  crownbreakerState?: PendingCombat["crownbreakerState"] | null;
   gambitWindowStartedAt?: number | null;
   gambitWindowDeadlineAt?: number | null;
   resultRevealedAt?: number | null;
@@ -134,6 +136,7 @@ export interface FirestoreGameState {
   selectedFactions?: SelectedFactions | null;
   cards?: FirestoreCardStateBySide | null;
   drawState?: DrawStateBySide | null;
+  turnActions?: TurnActionStateBySide | null;
   activeMoveCard?: ActiveMoveCard | null;
   selectedPieceId?: string | null;
   pieces: FirestorePiece[];

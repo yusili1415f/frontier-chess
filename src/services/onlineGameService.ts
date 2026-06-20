@@ -1,11 +1,14 @@
 import { doc, getDoc, onSnapshot, runTransaction, setDoc, Unsubscribe } from "firebase/firestore";
 import { getLegalMove } from "../engine/movement";
-import { applyAdvanceMove, applyBannerDrillMove, applyMove, createInitialGameState, skipBannerDrillCannonMove } from "../engine/gameState";
+import { applyAdvanceMove, applyBannerDrillMove, applyCrownbreakerPostCombatMove, applyIronCrownActiveMove, applyMove, createInitialGameState, getCrownbreakerPostCombatMoves, getIronCrownActiveMoves, skipBannerDrillCannonMove, skipCrownbreakerPostCombatMove } from "../engine/gameState";
 import { annotateLastMove } from "../engine/history";
-import { PlayerSide, SelectedFactions } from "../engine/types";
-import { cancelActiveMoveCard, moveCardFromHandToDiscard, playCard } from "../engine/cards/cardEngine";
+import { GameState, PlayerSide, SelectedFactions } from "../engine/types";
+import { cancelActiveMoveCard, createDefaultCards, createDefaultDrawState, createDefaultTurnActions, moveCardFromHandToDiscard, playCard, voluntaryDiscardCards } from "../engine/cards/cardEngine";
 import {
   autoRollExpiredPendingCombat,
+  attachBreakthroughCharge,
+  attachCrownbreakerCharge,
+  declineBreakthroughChargeReroll,
   canSideUseGambit,
   canPlayBeforeCombatCard,
   createPendingCombat,
@@ -14,6 +17,7 @@ import {
   playBeforeCombatCard,
   playPendingCombatGambit,
   rollPendingCombatSide,
+  useBreakthroughChargeReroll,
 } from "../engine/pendingCombat";
 import {
   OnlineGameDocument,
@@ -55,6 +59,7 @@ export async function createOnlineGame(playerId: string, selectedFactions?: Sele
   const gameId = createRoomCode();
   const now = Date.now();
   const initialState = createInitialGameState();
+  const roomSelectedFactions = selectedFactions ? { ...selectedFactions } : initialState.selectedFactions;
   const game = serializeOnlineGameForFirestore({
     gameId,
     gameVersion: APP_GAME_VERSION,
@@ -65,7 +70,10 @@ export async function createOnlineGame(playerId: string, selectedFactions?: Sele
     bluePlayerId: playerId,
     gameState: {
       ...initialState,
-      selectedFactions: selectedFactions ? { ...selectedFactions } : initialState.selectedFactions,
+      selectedFactions: roomSelectedFactions,
+      cards: createDefaultCards(roomSelectedFactions),
+      drawState: createDefaultDrawState(),
+      turnActions: createDefaultTurnActions(),
     },
     matchNumber: 1,
     rematch: createEmptyRematchState(),
@@ -157,8 +165,21 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
     const defenderId = before.board[moveInput.to.row - 1]?.[moveInput.to.col]?.pieceId;
     const defender = defenderId ? before.pieces[defenderId] : undefined;
 
-    if (legalMove && moveInput.combatRollMode === "manual" && legalMove.classification?.kind === "combatCapture" && attacker && defender) {
-      const pendingCombat = createPendingCombat(before, legalMove, attacker, defender);
+    const crownbreakerPostCombat = before.activeMoveCard?.cardName === "Crownbreaker Charge" && before.activeMoveCard.phase === "postCombatMove";
+    const ironCrownCard = (before.activeMoveCard?.cardName === "Breakthrough Charge" || before.activeMoveCard?.cardName === "Crownbreaker Charge") && !crownbreakerPostCombat
+      ? before.activeMoveCard
+      : undefined;
+    const ironCrownLegalMove = ironCrownCard
+      ? getIronCrownActiveMoves(before, moveInput.pieceId).find((move) => move.to.col === moveInput.to.col && move.to.row === moveInput.to.row)
+      : undefined;
+    const pendingLegalMove = ironCrownLegalMove ?? legalMove;
+
+    if (ironCrownCard && !ironCrownLegalMove) {
+      throw new Error("That Iron Crown card move is not legal in the latest online game state.");
+    }
+
+    if (pendingLegalMove && moveInput.combatRollMode === "manual" && pendingLegalMove.classification?.kind === "combatCapture" && attacker && defender && !ironCrownCard) {
+      const pendingCombat = createPendingCombat(before, pendingLegalMove, attacker, defender);
       const serializedState = serializeGameStateForFirestore({ ...before, selectedPieceId: undefined });
       const nextGame: Partial<OnlineGameDocument> = {
         updatedAt: Date.now(),
@@ -173,10 +194,34 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
       return;
     }
 
+    if (ironCrownCard && pendingLegalMove?.classification?.kind === "combatCapture" && attacker && defender) {
+      const beforeState = prepareIronCrownPendingCombatState(before);
+      let pendingCombat = createPendingCombat(beforeState, pendingLegalMove, attacker, defender);
+      pendingCombat = ironCrownCard.cardName === "Breakthrough Charge"
+        ? attachBreakthroughCharge(pendingCombat, ironCrownCard.side, attacker.id, ironCrownCard.cardId)
+        : attachCrownbreakerCharge(pendingCombat, ironCrownCard.side, attacker.id, ironCrownCard.cardId);
+      const serializedState = serializeGameStateForFirestore({ ...beforeState, selectedPieceId: undefined });
+      const nextGame: Partial<OnlineGameDocument> = {
+        updatedAt: Date.now(),
+        currentPlayer: before.turn,
+        gameState: serializedState,
+        moveHistory: serializedState.moveHistory,
+        pendingCombat: serializePendingCombatForFirestore(pendingCombat),
+      };
+
+      assertNoNestedArraysInDevelopment(nextGame, "submitOnlineMove.ironCrownPendingCombat");
+      transaction.update(ref, sanitizeForFirestoreRecord(nextGame));
+      return;
+    }
+
     const applied = isCardMove
       ? before.activeMoveCard?.cardName === "Banner Drill"
         ? applyBannerDrillMove(before, moveInput.pieceId, moveInput.to)
-        : applyAdvanceMove(before, moveInput.pieceId, moveInput.to)
+        : crownbreakerPostCombat
+          ? applyCrownbreakerPostCombatMove(before, moveInput.pieceId, moveInput.to)
+          : ironCrownLegalMove
+          ? applyIronCrownActiveMove(before, moveInput.pieceId, ironCrownLegalMove)
+          : applyAdvanceMove(before, moveInput.pieceId, moveInput.to)
       : legalMove ? applyMove(before, moveInput.pieceId, legalMove) : before;
     if (applied === before || (!applied.lastMove && !isCardMove)) {
       throw new Error("Move could not be applied.");
@@ -244,6 +289,33 @@ export async function submitOnlineCardPlay(gameId: string, playerId: string, car
   });
 }
 
+export async function submitOnlineVoluntaryDiscard(gameId: string, playerId: string, cardIds: string[]): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    if (storedGame.status !== "active" || storedGame.pendingCombat) {
+      throw new Error("Voluntary discard is not available right now.");
+    }
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    const side = game.currentPlayer;
+    assertPlayerOwnsTurn(game, playerId, side);
+    const nextState = voluntaryDiscardCards(game.gameState, side, cardIds);
+    if (nextState === game.gameState) {
+      throw new Error("Voluntary discard could not be applied.");
+    }
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      gameState: serializedState,
+      moveHistory: serializedState.moveHistory,
+    }));
+  });
+}
+
 export async function cancelOnlineActiveMoveCard(gameId: string, playerId: string): Promise<void> {
   const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
   await runTransaction(requireFirestore(), async (transaction) => {
@@ -275,6 +347,48 @@ export async function submitOnlineSkipBannerDrillCannon(gameId: string, playerId
     const nextState = skipBannerDrillCannonMove(game.gameState, side);
     const serializedState = serializeGameStateForFirestore(nextState);
     transaction.update(ref, sanitizeForFirestoreRecord({ updatedAt: Date.now(), gameState: serializedState }));
+  });
+}
+
+export async function submitOnlineSkipCrownbreakerPostCombat(gameId: string, playerId: string): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    const side = game.gameState.activeMoveCard?.side ?? game.currentPlayer;
+    assertPlayerOwnsTurn(game, playerId, side);
+    const nextState = skipCrownbreakerPostCombatMove(game.gameState, side);
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      currentPlayer: nextState.turn,
+      gameState: serializedState,
+      moveHistory: serializedState.moveHistory,
+    }));
+  });
+}
+
+export async function submitOnlineBreakthroughResponse(gameId: string, playerId: string, side: PlayerSide, action: "reroll" | "keep"): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    if (!storedGame.pendingCombat) {
+      throw new Error("There is no pending combat.");
+    }
+    assertPlayerOwnsTurn(storedGame, playerId, side);
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    const pendingCombat = action === "reroll"
+      ? useBreakthroughChargeReroll(game.pendingCombat!, side, game.gameState)
+      : declineBreakthroughChargeReroll(game.pendingCombat!, game.gameState);
+    transaction.update(ref, sanitizeForFirestoreRecord(resolveOrStorePendingCombat(storedGame, pendingCombat)));
   });
 }
 
@@ -358,7 +472,7 @@ export async function autoRollExpiredOnlineCombat(gameId: string): Promise<void>
       return;
     }
 
-    const rolled = autoRollExpiredPendingCombat(pendingCombat);
+    const rolled = autoRollExpiredPendingCombat(pendingCombat, Date.now(), game.gameState);
     transaction.update(ref, sanitizeForFirestoreRecord(resolveOrStorePendingCombat(storedGame, rolled)));
   });
 }
@@ -452,8 +566,13 @@ export function startOnlineRematchIfBothAccepted(game: OnlineGameDocument): Part
 
   const nextMatchNumber = (game.matchNumber ?? 1) + 1;
   const freshState = createInitialGameState();
+  const selectedFactions = game.gameState.selectedFactions ?? freshState.selectedFactions;
   const serializedState = serializeGameStateForFirestore({
     ...freshState,
+    selectedFactions,
+    cards: createDefaultCards(selectedFactions),
+    drawState: createDefaultDrawState(),
+    turnActions: createDefaultTurnActions(),
     log: [`Match ${nextMatchNumber} started in the same room.`, ...freshState.log],
   });
   const shouldSwap = rematch.sideMode === "swap";
@@ -546,7 +665,7 @@ function resolveOrStorePendingCombat(storedGame: OnlineGameDocument, pendingComb
     throw new Error("Pending combat can no longer be resolved because the move is no longer legal.");
   }
 
-  const nextState = annotateLastMove(
+  const resolvedState = annotateLastMove(
     {
       ...applyMove(
         {
@@ -564,6 +683,7 @@ function resolveOrStorePendingCombat(storedGame: OnlineGameDocument, pendingComb
     },
     "Human",
   );
+  const nextState = prepareCrownbreakerAfterOnlineCombat(pendingCombat, resolvedState);
   const status = nextState.winner ? "finished" : "active";
   const reason = nextState.winner ? "kingCaptured" : null;
   const serializedState = serializeGameStateForFirestore(nextState);
@@ -578,6 +698,68 @@ function resolveOrStorePendingCombat(storedGame: OnlineGameDocument, pendingComb
     winner: nextState.winner ?? null,
     reason,
   };
+}
+
+function prepareIronCrownPendingCombatState(gameState: GameState): GameState {
+  const activeCard = gameState.activeMoveCard;
+  if (!activeCard) {
+    return gameState;
+  }
+  if (activeCard.cardName === "Breakthrough Charge") {
+    const discarded = moveCardFromHandToDiscard(gameState, activeCard.side, activeCard.cardId);
+    return {
+      ...discarded,
+      activeMoveCard: undefined,
+      selectedPieceId: undefined,
+      log: [`${activeCard.side} Breakthrough Charge movement completed.`, ...discarded.log],
+    };
+  }
+  return {
+    ...gameState,
+    selectedPieceId: undefined,
+    activeMoveCard: {
+      ...activeCard,
+      phase: "selectDestination",
+    },
+  };
+}
+
+function prepareCrownbreakerAfterOnlineCombat(
+  pendingCombat: NonNullable<OnlineGameViewDocument["pendingCombat"]>,
+  resolvedState: GameState,
+): GameState {
+  const crown = pendingCombat.crownbreakerState;
+  if (!crown || !resolvedState.activeMoveCard || resolvedState.activeMoveCard.cardName !== "Crownbreaker Charge") {
+    return resolvedState;
+  }
+  const won = pendingCombat.winnerSide === crown.side && Boolean(resolvedState.pieces[crown.knightPieceId]);
+  if (!won || resolvedState.winner) {
+    return {
+      ...moveCardFromHandToDiscard(resolvedState, crown.side, crown.cardInstanceId),
+      activeMoveCard: undefined,
+      selectedPieceId: undefined,
+    };
+  }
+  const postState = {
+    ...resolvedState,
+    turn: crown.side,
+    activeMoveCard: {
+      ...resolvedState.activeMoveCard,
+      phase: "postCombatMove" as const,
+      selectedPieceId: crown.knightPieceId,
+      captureCountThisTurn: 1,
+    },
+    selectedPieceId: crown.knightPieceId,
+    log: [`${crown.side} Knight wins combat. Crownbreaker post-combat move available.`, ...resolvedState.log],
+  };
+  return getCrownbreakerPostCombatMoves(postState, crown.knightPieceId).length
+    ? postState
+    : {
+        ...moveCardFromHandToDiscard(resolvedState, crown.side, crown.cardInstanceId),
+        activeMoveCard: undefined,
+        selectedPieceId: undefined,
+        log: [`${crown.side} Crownbreaker Charge complete: no adjacent empty square.`, ...resolvedState.log],
+      };
 }
 
 function sanitizeForFirestore(value: unknown): unknown {

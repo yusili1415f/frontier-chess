@@ -6,7 +6,7 @@ import { applyPromotionIfNeeded } from "./promotion";
 import { createStartingPosition } from "./setup";
 import { getCheckedSides } from "./kingThreat";
 import { DEFAULT_SELECTED_FACTIONS } from "../data/factions/testFactions";
-import { applyCardDrawTriggersAfterMove, completeActiveMoveCard, createDefaultCards, createDefaultDrawState, getAdvanceMoves } from "./cards/cardEngine";
+import { applyCardDrawTriggersAfterMove, completeActiveMoveCard, createDefaultCards, createDefaultDrawState, createDefaultTurnActions, getAdvanceMoves } from "./cards/cardEngine";
 import { CombatModifier, ForcedDice, GameState, LegalMove, MoveRecord, Piece, PlayerSide, Position } from "./types";
 
 export function createInitialGameState(): GameState {
@@ -20,7 +20,8 @@ export function createInitialGameState(): GameState {
     selectedFactions,
     cards: createDefaultCards(selectedFactions),
     drawState: createDefaultDrawState(),
-    log: ["Blue moves first."],
+    turnActions: createDefaultTurnActions(),
+    log: ["Blue moves first.", "Decks shuffled."],
     moveHistory: [],
   };
 }
@@ -108,6 +109,38 @@ export function getBannerDrillMoves(state: GameState, pieceId: string): Position
   return [];
 }
 
+export function getIronCrownActiveMoves(state: GameState, pieceId: string): LegalMove[] {
+  const activeCard = state.activeMoveCard;
+  const piece = state.pieces[pieceId];
+  if (
+    !activeCard ||
+    (activeCard.cardName !== "Breakthrough Charge" && activeCard.cardName !== "Crownbreaker Charge") ||
+    !piece ||
+    piece.side !== activeCard.side ||
+    piece.type !== "Knight"
+  ) {
+    return [];
+  }
+  return getLegalMovesForPiece(state, pieceId);
+}
+
+export function applyIronCrownActiveMove(state: GameState, pieceId: string, move: LegalMove): GameState {
+  const activeCard = state.activeMoveCard;
+  const piece = state.pieces[pieceId];
+  if (
+    !activeCard ||
+    (activeCard.cardName !== "Breakthrough Charge" && activeCard.cardName !== "Crownbreaker Charge") ||
+    !piece ||
+    piece.side !== activeCard.side ||
+    piece.type !== "Knight" ||
+    piece.side !== state.turn
+  ) {
+    return state;
+  }
+  const after = applyMove(state, pieceId, move);
+  return after === state ? state : completeActiveMoveCard(after);
+}
+
 export function applyBannerDrillMove(state: GameState, pieceId: string, to: Position): GameState {
   const activeCard = state.activeMoveCard;
   const piece = state.pieces[pieceId];
@@ -154,6 +187,51 @@ export function skipBannerDrillCannonMove(state: GameState, side: PlayerSide): G
     return state;
   }
   return completeActiveMoveCard(finishCardMovement(state, `${side} skips Cannon movement.`));
+}
+
+export function getCrownbreakerPostCombatMoves(state: GameState, pieceId: string): Position[] {
+  const activeCard = state.activeMoveCard;
+  const piece = state.pieces[pieceId];
+  if (!activeCard || activeCard.cardName !== "Crownbreaker Charge" || activeCard.phase !== "postCombatMove" || !piece || piece.side !== activeCard.side) {
+    return [];
+  }
+  return emptyAdjacentSquares(state, piece, true);
+}
+
+export function applyCrownbreakerPostCombatMove(state: GameState, pieceId: string, to: Position): GameState {
+  const activeCard = state.activeMoveCard;
+  const piece = state.pieces[pieceId];
+  const legal = getCrownbreakerPostCombatMoves(state, pieceId).some((move) => samePosition(move, to));
+  if (!activeCard || activeCard.cardName !== "Crownbreaker Charge" || !piece || piece.side !== activeCard.side || !legal) {
+    return state;
+  }
+  const from = getPiecePosition(state.board, pieceId);
+  if (!from) {
+    return state;
+  }
+  const board = setPieceAt(setPieceAt(cloneBoard(state.board), from, undefined), to, pieceId);
+  return completeActiveMoveCard({
+    ...state,
+    board,
+    turn: oppositeSide(piece.side),
+    activeMoveCard: {
+      ...activeCard,
+      phase: "postCombatMove",
+    },
+    selectedPieceId: undefined,
+    log: [`${piece.side} Knight moves 1 space after combat.`, ...state.log],
+  });
+}
+
+export function skipCrownbreakerPostCombatMove(state: GameState, side: PlayerSide): GameState {
+  if (state.activeMoveCard?.cardName !== "Crownbreaker Charge" || state.activeMoveCard.side !== side || state.activeMoveCard.phase !== "postCombatMove") {
+    return state;
+  }
+  return completeActiveMoveCard(finishCardMovement({
+    ...state,
+    turn: oppositeSide(side),
+    selectedPieceId: undefined,
+  }, `${side} skips Crownbreaker post-combat move.`));
 }
 
 export function applyMove(state: GameState, pieceId: string, move: LegalMove): GameState {
@@ -313,6 +391,14 @@ function finishMove(
     pieces,
     turn: nextTurn,
     turnNumber: winner ? state.turnNumber : state.turnNumber + 1,
+    turnActions: winner
+      ? state.turnActions
+      : {
+          ...state.turnActions,
+          [nextTurn]: {
+            voluntaryDiscardUsedThisTurn: false,
+          },
+        },
     selectedPieceId: undefined,
     lastMove: recordWithCheck,
     moveHistory: [recordWithCheck, ...state.moveHistory],
@@ -448,6 +534,10 @@ function hasAdjacentFriendlyCannon(state: GameState, guardId: string): boolean {
     isAdjacentToPiece(state, piece, guardId) &&
     emptyOrthogonalSquares(state, piece).length > 0
   );
+}
+
+function samePosition(a: Position, b: Position): boolean {
+  return a.col === b.col && a.row === b.row;
 }
 
 export { getPiecePosition };

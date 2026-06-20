@@ -1,17 +1,27 @@
 import { BASIC_CARDS } from "../../data/cards/basicCards";
 import { TEST_FACTIONS } from "../../data/factions/testFactions";
 import { getSquare, isFrontierLine, isHomeTerritory, isInsideBoard } from "../board";
-import { CardStateBySide, DrawStateBySide, GameState, MoveRecord, PlayerDrawState, PlayerSide, Position, SelectedFactions } from "../types";
+import { CardStateBySide, DrawStateBySide, GameState, MoveRecord, PlayerDrawState, PlayerSide, Position, SelectedFactions, TurnActionStateBySide } from "../types";
 import { GameCard, PlayerCardState } from "./cardTypes";
 
 export const DEFAULT_HAND_LIMIT = 2;
 export const PASSIVE_DRAW_LIMIT = 5;
 export const ACTIVE_DRAW_LIMIT = 2;
 
-export function createDefaultCards(selectedFactions: SelectedFactions): CardStateBySide {
+export function shuffleArray<T>(items: readonly T[], rng: () => number = Math.random): T[] {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(rng() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+export function createDefaultCards(selectedFactions: SelectedFactions, options: { shuffle?: boolean; rng?: () => number } = {}): CardStateBySide {
+  const maybeShuffle = (deck: GameCard[]) => options.shuffle === false ? deck : shuffleArray(deck, options.rng);
   return {
-    Blue: createPlayerCardState(buildStartingDeck(selectedFactions.Blue)),
-    Red: createPlayerCardState(buildStartingDeck(selectedFactions.Red)),
+    Blue: createPlayerCardState(maybeShuffle(buildStartingDeck(selectedFactions.Blue))),
+    Red: createPlayerCardState(maybeShuffle(buildStartingDeck(selectedFactions.Red))),
   };
 }
 
@@ -19,6 +29,13 @@ export function createDefaultDrawState(): DrawStateBySide {
   return {
     Blue: createPlayerDrawState(),
     Red: createPlayerDrawState(),
+  };
+}
+
+export function createDefaultTurnActions(): TurnActionStateBySide {
+  return {
+    Blue: createPlayerTurnActionState(),
+    Red: createPlayerTurnActionState(),
   };
 }
 
@@ -106,6 +123,51 @@ export function discardCard(gameState: GameState, side: PlayerSide, cardId: stri
   );
 }
 
+export function voluntaryDiscardCards(gameState: GameState, side: PlayerSide, cardIds: string[]): GameState {
+  if (
+    gameState.turn !== side ||
+    gameState.activeMoveCard ||
+    gameState.turnActions[side].voluntaryDiscardUsedThisTurn ||
+    cardIds.length > gameState.cards[side].handLimit
+  ) {
+    return gameState;
+  }
+  const cards = gameState.cards[side];
+  const selectedIds = [...new Set(cardIds)].slice(0, cards.handLimit);
+  let hand = [...cards.hand];
+  const discarded: GameCard[] = [];
+  selectedIds.forEach((cardId) => {
+    const card = findCardInList(hand, cardId);
+    if (!card) {
+      return;
+    }
+    discarded.push(card);
+    hand = removeCardFromHand(hand, card.id);
+  });
+
+  const message = discarded.length === 0
+    ? `${side} skips voluntary discard.`
+    : `${side} discards ${discarded.length} card${discarded.length === 1 ? "" : "s"}.`;
+  return {
+    ...gameState,
+    cards: {
+      ...gameState.cards,
+      [side]: {
+        ...cards,
+        hand,
+        discard: [...cards.discard, ...discarded],
+      },
+    },
+    turnActions: {
+      ...gameState.turnActions,
+      [side]: {
+        voluntaryDiscardUsedThisTurn: true,
+      },
+    },
+    log: [message, ...gameState.log],
+  };
+}
+
 export function moveCardFromHandToDiscard(gameState: GameState, side: PlayerSide, cardId: string): GameState {
   const cards = gameState.cards[side];
   const card = findCardInHand(cards, cardId);
@@ -146,6 +208,11 @@ export function canPlayCard(gameState: GameState, side: PlayerSide, cardId: stri
   if (cardDefinitionId(card) === "banner_drill") {
     return gameState.turn === side && !gameState.activeMoveCard;
   }
+  if (cardDefinitionId(card) === "breakthrough_charge" || cardDefinitionId(card) === "crownbreaker_charge") {
+    return gameState.turn === side &&
+      gameState.selectedFactions[side] === "iron_crown_cavalry" &&
+      !gameState.activeMoveCard;
+  }
   return true;
 }
 
@@ -185,6 +252,23 @@ export function playCard(gameState: GameState, side: PlayerSide, cardId: string,
       },
       selectedPieceId: undefined,
     }, `${side} plays Banner Drill. Select a friendly Guard.`);
+  }
+  if (cardDefinitionId(card) === "breakthrough_charge" || cardDefinitionId(card) === "crownbreaker_charge") {
+    if (!canPlayCard(gameState, side, card.id, context)) {
+      return withCardLog(gameState, `${side} cannot play ${card.name} right now.`);
+    }
+    return withCardLog({
+      ...gameState,
+      activeMoveCard: {
+        side,
+        cardId: card.id,
+        cardDefinitionId: cardDefinitionId(card),
+        cardName: card.name as "Breakthrough Charge" | "Crownbreaker Charge",
+        phase: "selectPiece",
+        captureCountThisTurn: 0,
+      },
+      selectedPieceId: undefined,
+    }, `${side} plays ${card.name}. Select a friendly Knight.`);
   }
   return withCardLog(gameState, `${side} holds ${card.name}; play effects are not wired yet.`);
 }
@@ -251,6 +335,7 @@ export function rebuildCardsForSelectedFactions(gameState: GameState, selectedFa
     selectedFactions,
     cards: createDefaultCards(selectedFactions),
     drawState: createDefaultDrawState(),
+    turnActions: createDefaultTurnActions(),
   };
 }
 
@@ -270,8 +355,9 @@ export function normalizeCardState(
   selectedFactions: SelectedFactions,
   cards?: CardStateBySide,
   drawState?: DrawStateBySide,
-): { cards: CardStateBySide; drawState: DrawStateBySide } {
-  const defaults = createDefaultCards(selectedFactions);
+  turnActions?: TurnActionStateBySide,
+): { cards: CardStateBySide; drawState: DrawStateBySide; turnActions: TurnActionStateBySide } {
+  const defaults = createDefaultCards(selectedFactions, { shuffle: false });
   return {
     cards: {
       Blue: normalizePlayerCardState(cards?.Blue, defaults.Blue),
@@ -280,6 +366,10 @@ export function normalizeCardState(
     drawState: {
       Blue: normalizePlayerDrawState(drawState?.Blue),
       Red: normalizePlayerDrawState(drawState?.Red),
+    },
+    turnActions: {
+      Blue: normalizePlayerTurnActionState(turnActions?.Blue),
+      Red: normalizePlayerTurnActionState(turnActions?.Red),
     },
   };
 }
@@ -440,6 +530,12 @@ function createPlayerDrawState(): PlayerDrawState {
   };
 }
 
+function createPlayerTurnActionState() {
+  return {
+    voluntaryDiscardUsedThisTurn: false,
+  };
+}
+
 function normalizePlayerCardState(cards: PlayerCardState | undefined, defaults: PlayerCardState): PlayerCardState {
   return {
     deck: cards?.deck?.map(cloneCard) ?? defaults.deck,
@@ -453,6 +549,13 @@ function normalizePlayerDrawState(drawState: PlayerDrawState | undefined): Playe
   return {
     ...createPlayerDrawState(),
     ...drawState,
+  };
+}
+
+function normalizePlayerTurnActionState(turnActionState: { voluntaryDiscardUsedThisTurn?: boolean } | undefined) {
+  return {
+    ...createPlayerTurnActionState(),
+    ...turnActionState,
   };
 }
 
@@ -497,7 +600,11 @@ function stripCopySuffix(cardId: string): string {
 }
 
 function findCardInHand(cards: PlayerCardState, cardId: string): GameCard | undefined {
-  return cards.hand.find((entry) => entry.id === cardId) ?? cards.hand.find((entry) => isCardMatch(entry, cardId));
+  return findCardInList(cards.hand, cardId);
+}
+
+function findCardInList(cards: GameCard[], cardId: string): GameCard | undefined {
+  return cards.find((entry) => entry.id === cardId) ?? cards.find((entry) => isCardMatch(entry, cardId));
 }
 
 function isCardMatch(card: GameCard, cardId: string): boolean {

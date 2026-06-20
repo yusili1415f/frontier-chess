@@ -17,10 +17,12 @@ import { getCheckedSides, getKingThreats, isKingInCheck } from "./kingThreat";
 import { deriveLastMoveHighlight } from "./lastMoveHighlight";
 import {
   autoRollExpiredPendingCombat,
+  canPlayBeforeCombatCard,
   createPendingCombat,
   getPendingCombatWinner,
   passPendingCombatGambit,
   pendingCombatToForcedDice,
+  playBeforeCombatCard,
   playPendingCombatGambit,
   rollPendingCombatSide,
 } from "./pendingCombat";
@@ -40,6 +42,7 @@ import {
   canDrawCard,
   createDefaultCards,
   createDefaultDrawState,
+  createDefaultTurnActions,
   drawCard,
   drawCards,
   getAdvanceMoves,
@@ -48,6 +51,7 @@ import {
 import { applyAfterCombatFactionEffects, applyAfterMoveFactionEffects, applyBeforeCombatFactionEffects, FACTION_HOOKS_NO_EFFECT_MESSAGE, getFactionCardsForTiming } from "./factions/factionEngine";
 import { FactionCardType } from "./factions/factionTypes";
 import { GameState, LegalMove, Piece, Position } from "./types";
+import { GameCard } from "./cards/cardTypes";
 
 type ValidationResult = {
   passed: boolean;
@@ -188,23 +192,23 @@ export function runRuleValidation(): ValidationResult {
     ["Manual combat timeout auto-rolls missing dice", validatesManualRollTimeoutAutoRoll],
     ["Automatic combat mode still resolves without manual flag", validatesAutomaticCombatUnchanged],
     ["Four test factions exist", validatesFourTestFactions],
-    ["Each test faction has exactly five cards", validatesFactionCardCounts],
-    ["Each test faction has two Banners, two Orders, and one Relic", validatesFactionCardTypes],
-    ["Only Dragon Standard is implemented", validatesOnlyDragonStandardImplemented],
+    ["Each test faction has exactly three faction cards", validatesFactionCardCounts],
+    ["Each test faction has one Banner, one Order, and one Relic", validatesFactionCardTypes],
+    ["Only Dragon Banner Army cards are implemented", validatesOnlyDragonStandardImplemented],
     ["Initial game state stores default selected faction IDs", validatesDefaultSelectedFactions],
     ["Faction selections serialize for online game state", validatesFactionSelectionsSerialize],
     ["Missing online faction selections load with safe defaults", validatesMissingFactionSelectionsDefault],
     ["Faction hooks do not mutate context", validatesFactionHooksNoOp],
     ["Faction card timing lookup reads selected faction data only", validatesFactionCardsForTiming],
     ["Selecting factions does not change movement", validatesFactionSelectionDoesNotChangeMovement],
-    ["Dragon Banner Army attacking into Frontier Zone gets +1", validatesDragonStandardAttackerFrontierBonus],
-    ["Dragon Banner Army defending does not get +1", validatesDragonStandardDoesNotHelpDefender],
-    ["Dragon Banner Army attacking outside Frontier Zone does not get +1", validatesDragonStandardOutsideFrontierNoBonus],
-    ["Non-Dragon factions do not get Dragon Standard bonus", validatesNonDragonFactionNoDragonBonus],
-    ["Dragon Standard modifier can change combat winner", validatesDragonStandardCanChangeWinner],
-    ["Attacker still wins ties after faction modifiers", validatesFactionModifiedTieAttackerWins],
-    ["Manual combat stores Dragon Standard base modifier and final values", validatesManualDragonStandardPendingCombat],
-    ["Online combat serialization preserves Dragon Standard modifier", validatesOnlineDragonStandardModifierSerialization],
+    ["Dragon Formation is not automatic", validatesDragonStandardAttackerFrontierBonus],
+    ["Dragon Formation can be played before combat when adjacent to friendly Guard", validatesDragonStandardDoesNotHelpDefender],
+    ["Guan Dao Champion can be played before combat for adjacent Guard", validatesDragonStandardOutsideFrontierNoBonus],
+    ["Non-Dragon factions do not get automatic Dragon modifiers", validatesNonDragonFactionNoDragonBonus],
+    ["Dragon Formation modifier can change combat winner when played", validatesDragonStandardCanChangeWinner],
+    ["Attacker still wins ties after played card modifiers", validatesFactionModifiedTieAttackerWins],
+    ["Manual combat stores played Dragon card modifiers and final values", validatesManualDragonStandardPendingCombat],
+    ["Online combat serialization preserves played Dragon card modifier", validatesOnlineDragonStandardModifierSerialization],
     ["Each player starts with a seven-card deck", validatesStartingDeckSize],
     ["Card hand limit is two", validatesCardHandLimit],
     ["Drawing moves top deck card to hand", validatesCardDrawMovesDeckToHand],
@@ -1464,20 +1468,21 @@ function validatesFourTestFactions(): boolean {
 }
 
 function validatesFactionCardCounts(): boolean {
-  return TEST_FACTIONS.every((faction) => faction.cards.length === 5);
+  return TEST_FACTIONS.every((faction) => faction.cards.length === 3);
 }
 
 function validatesFactionCardTypes(): boolean {
   return TEST_FACTIONS.every((faction) =>
-    faction.cards.filter((card) => card.type === "Banner").length === 2 &&
-    faction.cards.filter((card) => card.type === "Order").length === 2 &&
+    faction.cards.filter((card) => card.type === "Banner").length === 1 &&
+    faction.cards.filter((card) => card.type === "Order").length === 1 &&
     faction.cards.filter((card) => card.type === "Relic").length === 1
   );
 }
 
 function validatesOnlyDragonStandardImplemented(): boolean {
+  const implementedDragonCards = new Set(["dragon_formation", "banner_drill", "guan_dao_champion"]);
   return TEST_FACTIONS.every((faction) =>
-    faction.cards.every((card) => card.implemented === (faction.id === "dragon_banner_army" && card.id === "dragon_banner"))
+    faction.cards.every((card) => card.implemented === (faction.id === "dragon_banner_army" && implementedDragonCards.has(card.id)))
   );
 }
 
@@ -1611,43 +1616,41 @@ function validatesDragonStandardAttackerFrontierBonus(): boolean {
 
   const after = applyMove({ ...state, forcedDice: { attackerValue: 3, defenderValue: 6 } }, "attacker", move);
   return after.lastMove?.combat?.attackerBaseValue === 3 &&
-    after.lastMove.combat.attackerModifiers.length === 1 &&
-    after.lastMove.combat.attackerModifiers[0].source === "Dragon Standard" &&
-    after.lastMove.combat.attackerFinalValue === 4;
+    after.lastMove.combat.attackerModifiers.length === 0 &&
+    after.lastMove.combat.attackerFinalValue === 3;
 }
 
 function validatesDragonStandardDoesNotHelpDefender(): boolean {
-  const state = {
-    ...customState([
-      { id: "attacker", side: "Red", type: "Rook", position: { col: 3, row: 6 } },
-      bluePiece("defender", "Pawn", { col: 3, row: 5 }),
-    ], "Red"),
-    selectedFactions: {
-      Blue: "dragon_banner_army",
-      Red: "iron_crown_cavalry",
-    },
-  };
-  const move = getLegalMove(state, "attacker", { col: 3, row: 5 });
+  const state = withBlueHand(customState([
+    bluePiece("attacker", "Rook", { col: 3, row: 3 }),
+    bluePiece("guard", "Guard", { col: 2, row: 3 }),
+    redPiece("defender", { col: 3, row: 4 }),
+  ]), dragonFormationCard());
+  const move = getLegalMove(state, "attacker", { col: 3, row: 4 });
   if (!move) {
     return false;
   }
 
-  const after = applyMove({ ...state, forcedDice: { attackerValue: 3, defenderValue: 3 } }, "attacker", move);
-  return after.lastMove?.combat?.attackerModifiers.length === 0 &&
-    after.lastMove?.combat?.defenderModifiers.length === 0 &&
-    after.lastMove?.combat?.defenderFinalValue === 3;
+  const played = playBeforeCombatCard(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), state, "Blue", "dragon_formation_1");
+  return played.pendingCombat.attackerModifiers?.[0]?.source === "Dragon Formation" &&
+    played.pendingCombat.attackerModifiers[0].value === 1 &&
+    played.gameState.cards.Blue.hand.length === 0 &&
+    played.gameState.cards.Blue.discard[0].id === "dragon_formation_1";
 }
 
 function validatesDragonStandardOutsideFrontierNoBonus(): boolean {
-  const state = customState([
-    bluePiece("attacker", "Rook", { col: 3, row: 2 }),
-    redPiece("defender", { col: 3, row: 6 }),
-  ]);
-  const result = resolveCombat(state, state.pieces.attacker, state.pieces.defender, { col: 3, row: 6 }, () => 0, {
-    attackerValue: 3,
-    defenderValue: 2,
-  });
-  return result.attackerModifiers.length === 0 && result.attackerFinalValue === 3;
+  const state = withBlueHand(customState([
+    bluePiece("attacker", "Guard", { col: 3, row: 3 }),
+    bluePiece("pawn", "Pawn", { col: 2, row: 3 }),
+    redPiece("defender", { col: 4, row: 4 }),
+  ]), guanDaoCard());
+  const move = getLegalMove(state, "attacker", { col: 4, row: 4 });
+  if (!move) {
+    return false;
+  }
+  const played = playBeforeCombatCard(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), state, "Blue", "guan_dao_champion_1");
+  return played.pendingCombat.attackerModifiers?.[0]?.source === "Guan Dao Champion" &&
+    played.pendingCombat.attackerModifiers[0].value === 2;
 }
 
 function validatesNonDragonFactionNoDragonBonus(): boolean {
@@ -1669,89 +1672,115 @@ function validatesNonDragonFactionNoDragonBonus(): boolean {
 }
 
 function validatesDragonStandardCanChangeWinner(): boolean {
-  const state = customState([
+  const state = withBlueHand(customState([
     bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    bluePiece("guard", "Guard", { col: 2, row: 2 }),
     redPiece("defender", { col: 3, row: 3 }),
-  ]);
-  const result = resolveCombat(state, state.pieces.attacker, state.pieces.defender, { col: 3, row: 3 }, () => 0, {
-    attackerValue: 3,
-    defenderValue: 4,
-  });
-  return result.attackerBaseValue === 3 &&
+  ]), dragonFormationCard());
+  const move = getLegalMove(state, "attacker", { col: 3, row: 3 });
+  if (!move) {
+    return false;
+  }
+  const played = playBeforeCombatCard(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), state, "Blue", "dragon_formation_1");
+  const result = applyMove({
+    ...played.gameState,
+    forcedDice: {
+      ...pendingCombatToForcedDice(played.pendingCombat),
+      attackerValue: 3,
+      defenderValue: 4,
+    },
+  }, "attacker", move).lastMove?.combat;
+  return result?.attackerBaseValue === 3 &&
     result.attackerFinalValue === 4 &&
     result.defenderFinalValue === 4 &&
     result.attackerWon === true;
 }
 
 function validatesFactionModifiedTieAttackerWins(): boolean {
-  const state = customState([
+  const state = withBlueHand(customState([
     bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    bluePiece("guard", "Guard", { col: 2, row: 2 }),
     redPiece("defender", { col: 3, row: 3 }),
-  ]);
-  const result = resolveCombat(state, state.pieces.attacker, state.pieces.defender, { col: 3, row: 3 }, () => 0, {
-    attackerValue: 2,
-    defenderValue: 3,
-  });
+  ]), dragonFormationCard());
+  const move = getLegalMove(state, "attacker", { col: 3, row: 3 });
+  if (!move) {
+    return false;
+  }
+  const played = playBeforeCombatCard(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), state, "Blue", "dragon_formation_1");
+  const result = applyMove({
+    ...played.gameState,
+    forcedDice: {
+      ...pendingCombatToForcedDice(played.pendingCombat),
+      attackerValue: 2,
+      defenderValue: 3,
+    },
+  }, "attacker", move).lastMove?.combat;
+  if (!result) {
+    return false;
+  }
   return result.attackerFinalValue === result.defenderFinalValue &&
     result.attackerWon &&
     result.winner === "Blue";
 }
 
 function validatesManualDragonStandardPendingCombat(): boolean {
-  const state = customState([
+  const state = withBlueHand(customState([
     bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    bluePiece("guard", "Guard", { col: 2, row: 2 }),
     redPiece("defender", { col: 3, row: 3 }),
-  ]);
+  ]), dragonFormationCard());
   const move = getLegalMove(state, "attacker", { col: 3, row: 3 });
   if (!move) {
     return false;
   }
 
-  const pending = createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100);
+  const pending = playBeforeCombatCard(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), state, "Blue", "dragon_formation_1").pendingCombat;
   const attackerRolled = rollPendingCombatSide(pending, "Blue", { dieIndex: 0 });
   const defenderRolled = rollPendingCombatSide(attackerRolled, "Red", { dieIndex: 0 });
   return defenderRolled.attackerProfileValue === defenderRolled.attackerProfile[0] &&
-    defenderRolled.attackerModifiers?.[0]?.source === "Dragon Standard" &&
+    defenderRolled.attackerModifiers?.[0]?.source === "Dragon Formation" &&
     defenderRolled.attackerFinalValue === (defenderRolled.attackerProfileValue ?? 0) + 1 &&
     getPendingCombatWinner(defenderRolled) === "Blue";
 }
 
 function validatesOnlineDragonStandardModifierSerialization(): boolean {
-  const state = customState([
+  const state = withBlueHand(customState([
     bluePiece("attacker", "Rook", { col: 3, row: 2 }),
+    bluePiece("guard", "Guard", { col: 2, row: 2 }),
     redPiece("defender", { col: 3, row: 3 }),
-  ]);
+  ]), dragonFormationCard());
   const move = getLegalMove(state, "attacker", { col: 3, row: 3 });
   if (!move) {
     return false;
   }
 
+  const played = playBeforeCombatCard(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), state, "Blue", "dragon_formation_1");
   const pending = rollPendingCombatSide(
-    rollPendingCombatSide(createPendingCombat(state, move, state.pieces.attacker, state.pieces.defender, 100), "Blue", { dieIndex: 0 }),
+    rollPendingCombatSide(played.pendingCombat, "Blue", { dieIndex: 0 }),
     "Red",
     { dieIndex: 0 },
   );
   const restoredPending = deserializePendingCombatFromFirestore(serializePendingCombatForFirestore(pending));
-  const combat = applyMove({ ...state, forcedDice: pendingCombatToForcedDice(restoredPending) }, "attacker", move).lastMove?.combat;
+  const combat = applyMove({ ...played.gameState, forcedDice: pendingCombatToForcedDice(restoredPending) }, "attacker", move).lastMove?.combat;
   const restoredState = deserializeGameStateFromFirestore(serializeGameStateForFirestore({
-    ...state,
+    ...played.gameState,
     moveHistory: combat ? [{
       text: "test",
       turnNumber: 1,
       player: "Blue",
-      attacker: state.pieces.attacker,
-      defender: state.pieces.defender,
+      attacker: played.gameState.pieces.attacker,
+      defender: played.gameState.pieces.defender,
       move,
       combat,
       captureType: "Combat",
       capturedPieceId: "defender",
-      removedPiece: state.pieces.defender,
+      removedPiece: played.gameState.pieces.defender,
     }] : [],
   }));
   const restoredCombat = restoredState.moveHistory[0]?.combat;
-  return restoredPending.attackerModifiers?.[0]?.source === "Dragon Standard" &&
+  return restoredPending.attackerModifiers?.[0]?.source === "Dragon Formation" &&
     restoredPending.attackerFinalValue === (restoredPending.attackerProfileValue ?? 0) + 1 &&
-    restoredCombat?.attackerModifiers[0]?.source === "Dragon Standard" &&
+    restoredCombat?.attackerModifiers[0]?.source === "Dragon Formation" &&
     restoredCombat.attackerFinalValue === combat?.attackerFinalValue;
 }
 
@@ -1809,6 +1838,7 @@ function validatesThreeCaptureDrawOnce(): boolean {
       Red: {
         ...createDefaultDrawState().Red,
         capturedPiecesCount: 2,
+        eligibleCapturedCount: 2,
       },
     },
   };
@@ -1824,12 +1854,15 @@ function validatesThreeCaptureDrawOnce(): boolean {
       Red: {
         ...state.drawState.Red,
         capturedPiecesCount: 3,
+        eligibleCapturedCount: 3,
+        passiveDrawsUsed: 1,
         hasDrawnForThreeCaptures: true,
       },
     },
   };
   const repeated = applyMove(repeatedState, "attacker", move);
   return after.drawState.Red.capturedPiecesCount === 3 &&
+    after.drawState.Red.eligibleCapturedCount === 3 &&
     after.drawState.Red.hasDrawnForThreeCaptures &&
     after.drawState.Red.passiveDrawsUsed === 1 &&
     after.cards.Red.hand.length === 1 &&
@@ -1847,7 +1880,8 @@ function validatesBishopCapturedDraw(): boolean {
   }
   const after = applyMove(base, "attacker", move);
   return after.drawState.Blue.capturedPiecesCount === 1 &&
-    after.drawState.Blue.passiveDrawsUsed === 1 &&
+    after.drawState.Blue.eligibleCapturedCount === 0 &&
+    after.drawState.Blue.passiveDrawsUsed === 0 &&
     after.cards.Blue.hand.length === 1 &&
     after.cards.Blue.discard.length === 2 &&
     after.log.some((entry) => entry.includes("Blue Bishop captured"));
@@ -1906,7 +1940,8 @@ function validatesPassiveDrawLimit(): boolean {
       ...createDefaultDrawState(),
       Blue: {
         ...createDefaultDrawState().Blue,
-        capturedPiecesCount: 2,
+        capturedPiecesCount: 15,
+        eligibleCapturedCount: 15,
         passiveDrawsUsed: 5,
       },
     },
@@ -1917,17 +1952,18 @@ function validatesPassiveDrawLimit(): boolean {
   }
   const after = applyMove(state, "attacker", move);
   return after.cards.Blue.hand.length === 0 &&
-    after.drawState.Blue.hasDrawnForThreeCaptures &&
-    after.log[0] === "Blue passive draw limit reached. Draw skipped.";
+    after.drawState.Blue.eligibleCapturedCount === 16 &&
+    after.drawState.Blue.passiveDrawsUsed === 5;
 }
 
 function validatesOnlineCardStateSerialization(): boolean {
   const state = drawCard(createInitialGameState(), "Blue");
   const serialized = serializeGameStateForFirestore(state);
   const restored = deserializeGameStateFromFirestore(serialized);
+  const drawn = state.cards.Blue.hand[0];
   return serialized.cards?.Blue.deckInstanceIds?.length === 6 &&
-    serialized.cards.Blue.handInstanceIds?.[0] === "basic_advance" &&
-    restored.cards.Blue.hand[0].name === "Advance";
+    serialized.cards.Blue.handInstanceIds?.[0] === drawn.id &&
+    restored.cards.Blue.hand[0].id === drawn.id;
 }
 
 function validatesMissingCardStateDefaults(): boolean {
@@ -1943,11 +1979,20 @@ function validatesMissingCardStateDefaults(): boolean {
 }
 
 function validatesUnimplementedCardsCannotBePlayed(): boolean {
-  const state = drawCard(createInitialGameState(), "Blue");
-  const after = playCard(state, "Blue", "basic_gambit");
+  const state = withBlueHand(createInitialGameState(), {
+    id: "sakura_banner_1",
+    definitionId: "sakura_banner",
+    name: "Sakura Banner",
+    source: "Faction",
+    factionCardType: "Banner",
+    timing: "passive",
+    description: "",
+    implemented: false,
+  });
+  const after = playCard(state, "Blue", "sakura_banner_1");
   return after.cards.Blue.hand.length === 1 &&
     after.cards.Blue.discard.length === 0 &&
-    after.log[0] === "Blue holds Gambit; play effects are not wired yet.";
+    after.log[0] === "Blue cannot play Sakura Banner: card effect is not implemented.";
 }
 
 function validatesAdvancePieceRestriction(): boolean {
@@ -2126,8 +2171,48 @@ function customState(entries: Array<Piece & { position: Position }>, turn: "Blue
     selectedFactions,
     cards: createDefaultCards(selectedFactions),
     drawState: createDefaultDrawState(),
+    turnActions: createDefaultTurnActions(),
     log: [],
     moveHistory: [],
+  };
+}
+
+function withBlueHand(state: GameState, ...hand: GameCard[]): GameState {
+  return {
+    ...state,
+    cards: {
+      ...state.cards,
+      Blue: {
+        ...state.cards.Blue,
+        hand,
+      },
+    },
+  };
+}
+
+function dragonFormationCard(): GameCard {
+  return {
+    id: "dragon_formation_1",
+    definitionId: "dragon_formation",
+    name: "Dragon Formation",
+    source: "Faction",
+    factionCardType: "Banner",
+    timing: "beforeCombat",
+    description: "",
+    implemented: true,
+  };
+}
+
+function guanDaoCard(): GameCard {
+  return {
+    id: "guan_dao_champion_1",
+    definitionId: "guan_dao_champion",
+    name: "Guan Dao Champion",
+    source: "Faction",
+    factionCardType: "Relic",
+    timing: "beforeCombat",
+    description: "",
+    implemented: true,
   };
 }
 

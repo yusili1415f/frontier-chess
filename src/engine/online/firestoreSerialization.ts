@@ -30,6 +30,10 @@ export function serializeGameStateForFirestore(gameState: GameState): FirestoreG
       Blue: { ...gameState.drawState.Blue },
       Red: { ...gameState.drawState.Red },
     },
+    turnActions: {
+      Blue: { ...gameState.turnActions.Blue },
+      Red: { ...gameState.turnActions.Red },
+    },
     activeMoveCard: gameState.activeMoveCard ?? null,
     selectedPieceId: gameState.selectedPieceId ?? null,
     pieces: Object.values(gameState.pieces)
@@ -80,6 +84,7 @@ export function deserializeGameStateFromFirestore(data: FirestoreGameState): Gam
         }
       : undefined,
     data.drawState ?? undefined,
+    data.turnActions ?? undefined,
   );
 
   return {
@@ -90,6 +95,7 @@ export function deserializeGameStateFromFirestore(data: FirestoreGameState): Gam
     selectedFactions,
     cards: normalizedCards.cards,
     drawState: normalizedCards.drawState,
+    turnActions: normalizedCards.turnActions,
     activeMoveCard: data.activeMoveCard ?? undefined,
     selectedPieceId: data.selectedPieceId ?? undefined,
     log: data.log ?? [],
@@ -269,6 +275,8 @@ export function serializePendingCombatForFirestore(pendingCombat: PendingCombat)
     defenderPassedGambit: pendingCombat.defenderPassedGambit ?? null,
     attackerPlayedCardIds: pendingCombat.attackerPlayedCardIds ?? [],
     defenderPlayedCardIds: pendingCombat.defenderPlayedCardIds ?? [],
+    breakthroughState: pendingCombat.breakthroughState ?? null,
+    crownbreakerState: pendingCombat.crownbreakerState ?? null,
     gambitWindowStartedAt: pendingCombat.gambitWindowStartedAt ?? null,
     gambitWindowDeadlineAt: pendingCombat.gambitWindowDeadlineAt ?? null,
     resultRevealedAt: pendingCombat.resultRevealedAt ?? null,
@@ -316,6 +324,8 @@ export function deserializePendingCombatFromFirestore(entry: FirestorePendingCom
     defenderPassedGambit: entry.defenderPassedGambit ?? undefined,
     attackerPlayedCardIds: entry.attackerPlayedCardIds ?? [],
     defenderPlayedCardIds: entry.defenderPlayedCardIds ?? [],
+    breakthroughState: entry.breakthroughState ?? undefined,
+    crownbreakerState: entry.crownbreakerState ?? undefined,
     gambitWindowStartedAt: entry.gambitWindowStartedAt ?? undefined,
     gambitWindowDeadlineAt: entry.gambitWindowDeadlineAt ?? undefined,
     resultRevealedAt: entry.resultRevealedAt ?? undefined,

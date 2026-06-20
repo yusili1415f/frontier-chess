@@ -10,6 +10,8 @@ type CombatRollPanelProps = {
   onRoll: (side: PlayerSide) => void;
   onPassGambit?: (side: PlayerSide) => void;
   onPlayGambit?: (side: PlayerSide) => void;
+  onKeepBreakthrough?: (side: PlayerSide) => void;
+  onUseBreakthrough?: (side: PlayerSide) => void;
 };
 
 export function CombatRollPanel({
@@ -20,6 +22,8 @@ export function CombatRollPanel({
   onRoll,
   onPassGambit,
   onPlayGambit,
+  onKeepBreakthrough,
+  onUseBreakthrough,
 }: CombatRollPanelProps) {
   if (!pendingCombat) {
     return null;
@@ -28,6 +32,7 @@ export function CombatRollPanel({
   const winner = getPendingCombatWinner(pendingCombat);
   const revealing = pendingCombat.status === "revealingResult";
   const gambitWindow = pendingCombat.status === "gambitWindow";
+  const breakthroughWindow = pendingCombat.status === "breakthroughWindow";
   const canRollAttacker = canRoll(pendingCombat, pendingCombat.attackerSide, currentRoller);
   const canRollDefender = canRoll(pendingCombat, pendingCombat.defenderSide, currentRoller);
 
@@ -85,6 +90,17 @@ export function CombatRollPanel({
         </div>
       ) : null}
 
+      {breakthroughWindow && pendingCombat.breakthroughState ? (
+        <div className="combat-comparison">
+          <strong>Breakthrough Charge</strong>
+          <span>{pendingCombat.breakthroughState.side} may reroll the attacking Knight's combat die once. The second result must be used.</span>
+          <div className="gambit-actions">
+            {onUseBreakthrough ? <button onClick={() => onUseBreakthrough(pendingCombat.breakthroughState!.side)} type="button">Reroll with Breakthrough Charge</button> : null}
+            {onKeepBreakthrough ? <button onClick={() => onKeepBreakthrough(pendingCombat.breakthroughState!.side)} type="button">Keep result</button> : null}
+          </div>
+        </div>
+      ) : null}
+
       {revealing && winner ? (
         <div className="combat-comparison">
           <span>Both players rolled.</span>
@@ -95,9 +111,9 @@ export function CombatRollPanel({
           <span>{winner} wins.</span>
           <span>Resolving in {resolveSecondsRemaining}s...</span>
         </div>
-      ) : (
+      ) : !gambitWindow && !breakthroughWindow ? (
         <p className="combat-waiting">Waiting for dice rolls. Board play is paused until combat resolves.</p>
-      )}
+      ) : null}
     </section>
   );
 }
