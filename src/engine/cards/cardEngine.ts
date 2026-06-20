@@ -213,6 +213,13 @@ export function canPlayCard(gameState: GameState, side: PlayerSide, cardId: stri
       gameState.selectedFactions[side] === "iron_crown_cavalry" &&
       !gameState.activeMoveCard;
   }
+  if (cardDefinitionId(card) === "raise_the_fallen" || cardDefinitionId(card) === "necromancers_bell") {
+    return gameState.turn === side &&
+      gameState.selectedFactions[side] === "bone_legion" &&
+      !gameState.activeMoveCard &&
+      getEligibleBoneRevivalPieces(gameState, side, cardDefinitionId(card)).length > 0 &&
+      getEmptyHomeZoneSquares(gameState, side).length > 0;
+  }
   return true;
 }
 
@@ -269,6 +276,22 @@ export function playCard(gameState: GameState, side: PlayerSide, cardId: string,
       },
       selectedPieceId: undefined,
     }, `${side} plays ${card.name}. Select a friendly Knight.`);
+  }
+  if (cardDefinitionId(card) === "raise_the_fallen" || cardDefinitionId(card) === "necromancers_bell") {
+    if (!canPlayCard(gameState, side, card.id, context)) {
+      return withCardLog(gameState, `${side} cannot play ${card.name} right now.`);
+    }
+    return withCardLog({
+      ...gameState,
+      activeMoveCard: {
+        side,
+        cardId: card.id,
+        cardDefinitionId: cardDefinitionId(card),
+        cardName: card.name as "Raise the Fallen" | "Necromancer's Bell",
+        phase: "selectRemovedPiece",
+      },
+      selectedPieceId: undefined,
+    }, `${side} plays ${card.name}. Choose a removed piece to return.`);
   }
   return withCardLog(gameState, `${side} holds ${card.name}; play effects are not wired yet.`);
 }
@@ -337,6 +360,25 @@ export function rebuildCardsForSelectedFactions(gameState: GameState, selectedFa
     drawState: createDefaultDrawState(),
     turnActions: createDefaultTurnActions(),
   };
+}
+
+export function getEligibleBoneRevivalPieces(gameState: GameState, side: PlayerSide, definitionId: string): GameState["removedPieces"][PlayerSide] {
+  const allowed = definitionId === "raise_the_fallen"
+    ? new Set(["Pawn"])
+    : new Set(["Pawn", "Guard"]);
+  return gameState.removedPieces[side].filter((piece) => allowed.has(piece.type));
+}
+
+export function getEmptyHomeZoneSquares(gameState: GameState, side: PlayerSide): Position[] {
+  const squares: Position[] = [];
+  gameState.board.forEach((rank) => {
+    rank.forEach((square) => {
+      if (isHomeTerritory(side, square.position) && !square.pieceId) {
+        squares.push(square.position);
+      }
+    });
+  });
+  return squares;
 }
 
 export function applyCardDrawTriggersAfterMove(gameState: GameState, record: MoveRecord): GameState {

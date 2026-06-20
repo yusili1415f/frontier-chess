@@ -1,5 +1,5 @@
 import { MoveActor } from "../history";
-import { ActiveMoveCard, CombatModifier, DrawStateBySide, GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position, SelectedFactions, TurnActionStateBySide } from "../types";
+import { ActiveMoveCard, CombatModifier, DrawStateBySide, GameState, LegalMove, MoveRecord, PendingCombat, PieceType, PlayerSide, Position, RemovedPiece, SelectedFactions, TurnActionStateBySide } from "../types";
 
 export type OnlineGameStatus = "waiting" | "active" | "finished";
 export type OnlineGameVersion = "core" | "faction";
@@ -63,6 +63,9 @@ export type FirestorePendingCombat = {
   defenderPlayedCardIds?: string[];
   breakthroughState?: PendingCombat["breakthroughState"] | null;
   crownbreakerState?: PendingCombat["crownbreakerState"] | null;
+  smokeBombState?: PendingCombat["smokeBombState"] | null;
+  lastStrikeState?: PendingCombat["lastStrikeState"] | null;
+  boneSacrificeState?: PendingCombat["boneSacrificeState"] | null;
   gambitWindowStartedAt?: number | null;
   gambitWindowDeadlineAt?: number | null;
   resultRevealedAt?: number | null;
@@ -137,6 +140,8 @@ export interface FirestoreGameState {
   cards?: FirestoreCardStateBySide | null;
   drawState?: DrawStateBySide | null;
   turnActions?: TurnActionStateBySide | null;
+  removedPieces?: Record<PlayerSide, RemovedPiece[]> | null;
+  cannotActPieceIds?: string[] | null;
   activeMoveCard?: ActiveMoveCard | null;
   selectedPieceId?: string | null;
   pieces: FirestorePiece[];

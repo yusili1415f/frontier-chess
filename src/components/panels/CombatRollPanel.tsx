@@ -1,6 +1,6 @@
 import { coordinateLabel } from "../../engine/board";
 import { getPendingCombatFinalValue, getPendingCombatWinner } from "../../engine/pendingCombat";
-import { CombatModifier, PendingCombat, PlayerSide } from "../../engine/types";
+import { CombatModifier, PendingCombat, PlayerSide, Position } from "../../engine/types";
 
 type CombatRollPanelProps = {
   pendingCombat?: PendingCombat;
@@ -12,6 +12,12 @@ type CombatRollPanelProps = {
   onPlayGambit?: (side: PlayerSide) => void;
   onKeepBreakthrough?: (side: PlayerSide) => void;
   onUseBreakthrough?: (side: PlayerSide) => void;
+  onPassLastStrike?: (side: PlayerSide) => void;
+  onPassSmokeBomb?: () => void;
+  onPlayLastStrike?: (side: PlayerSide) => void;
+  onUseSmokeBomb?: (side: PlayerSide, escapeSquare: Position) => void;
+  onCancelBoneSacrifice?: () => void;
+  onChooseBoneSacrificePawn?: (side: PlayerSide, pawnPieceId: string) => void;
 };
 
 export function CombatRollPanel({
@@ -24,6 +30,12 @@ export function CombatRollPanel({
   onPlayGambit,
   onKeepBreakthrough,
   onUseBreakthrough,
+  onPassLastStrike,
+  onPassSmokeBomb,
+  onPlayLastStrike,
+  onUseSmokeBomb,
+  onCancelBoneSacrifice,
+  onChooseBoneSacrificePawn,
 }: CombatRollPanelProps) {
   if (!pendingCombat) {
     return null;
@@ -33,6 +45,9 @@ export function CombatRollPanel({
   const revealing = pendingCombat.status === "revealingResult";
   const gambitWindow = pendingCombat.status === "gambitWindow";
   const breakthroughWindow = pendingCombat.status === "breakthroughWindow";
+  const smokeBombWindow = pendingCombat.status === "smokeBombEscape";
+  const lastStrikeWindow = pendingCombat.status === "lastStrikeWindow";
+  const boneSacrificeWindow = pendingCombat.status === "boneSacrificeSelect";
   const canRollAttacker = canRoll(pendingCombat, pendingCombat.attackerSide, currentRoller);
   const canRollDefender = canRoll(pendingCombat, pendingCombat.defenderSide, currentRoller);
 
@@ -90,6 +105,25 @@ export function CombatRollPanel({
         </div>
       ) : null}
 
+      {boneSacrificeWindow && pendingCombat.boneSacrificeState ? (
+        <div className="combat-comparison">
+          <strong>Bone Sacrifice</strong>
+          <span>{pendingCombat.boneSacrificeState.side} may sacrifice one adjacent friendly Pawn for +1.</span>
+          <div className="gambit-actions">
+            {pendingCombat.boneSacrificeState.legalPawnPieceIds.map((pieceId) => (
+              <button
+                key={pieceId}
+                onClick={() => onChooseBoneSacrificePawn?.(pendingCombat.boneSacrificeState!.side, pieceId)}
+                type="button"
+              >
+                Sacrifice {pieceId}
+              </button>
+            ))}
+            {onCancelBoneSacrifice ? <button onClick={onCancelBoneSacrifice} type="button">Cancel Bone Sacrifice</button> : null}
+          </div>
+        </div>
+      ) : null}
+
       {breakthroughWindow && pendingCombat.breakthroughState ? (
         <div className="combat-comparison">
           <strong>Breakthrough Charge</strong>
@@ -97,6 +131,36 @@ export function CombatRollPanel({
           <div className="gambit-actions">
             {onUseBreakthrough ? <button onClick={() => onUseBreakthrough(pendingCombat.breakthroughState!.side)} type="button">Reroll with Breakthrough Charge</button> : null}
             {onKeepBreakthrough ? <button onClick={() => onKeepBreakthrough(pendingCombat.breakthroughState!.side)} type="button">Keep result</button> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {smokeBombWindow && pendingCombat.smokeBombState ? (
+        <div className="combat-comparison">
+          <strong>Smoke Bomb</strong>
+          <span>{pendingCombat.smokeBombState.side} Bishop would be captured. Choose an adjacent empty escape square.</span>
+          <div className="gambit-actions">
+            {pendingCombat.smokeBombState.legalEscapeSquares.map((square) => (
+              <button
+                key={`${square.col}-${square.row}`}
+                onClick={() => onUseSmokeBomb?.(pendingCombat.smokeBombState!.side, square)}
+                type="button"
+              >
+                Escape to {coordinateLabel(square)}
+              </button>
+            ))}
+            {onPassSmokeBomb ? <button onClick={onPassSmokeBomb} type="button">Pass Smoke Bomb</button> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {lastStrikeWindow && pendingCombat.lastStrikeState ? (
+        <div className="combat-comparison">
+          <strong>Last Strike</strong>
+          <span>{pendingCombat.lastStrikeState.side} {pendingCombat.lastStrikeState.capturedPieceType} would be captured. Roll one die; 4-6 captures the attacker too.</span>
+          <div className="gambit-actions">
+            {onPlayLastStrike ? <button onClick={() => onPlayLastStrike(pendingCombat.lastStrikeState!.side)} type="button">Play Last Strike</button> : null}
+            {onPassLastStrike ? <button onClick={() => onPassLastStrike(pendingCombat.lastStrikeState!.side)} type="button">Pass</button> : null}
           </div>
         </div>
       ) : null}
@@ -109,9 +173,14 @@ export function CombatRollPanel({
           </strong>
           {getPendingCombatFinalValue(pendingCombat, "attacker") === getPendingCombatFinalValue(pendingCombat, "defender") ? <span>Tie: attacker wins.</span> : null}
           <span>{winner} wins.</span>
+          {pendingCombat.lastStrikeState?.dieIndex !== undefined ? (
+            <span>
+              Last Strike roll: {pendingCombat.lastStrikeState.dieIndex + 1}. {pendingCombat.lastStrikeState.success ? "Attacker is also captured." : "No additional effect."}
+            </span>
+          ) : null}
           <span>Resolving in {resolveSecondsRemaining}s...</span>
         </div>
-      ) : !gambitWindow && !breakthroughWindow ? (
+      ) : !gambitWindow && !breakthroughWindow && !smokeBombWindow && !lastStrikeWindow && !boneSacrificeWindow ? (
         <p className="combat-waiting">Waiting for dice rolls. Board play is paused until combat resolves.</p>
       ) : null}
     </section>
@@ -223,6 +292,9 @@ function canRoll(pendingCombat: PendingCombat, side: PlayerSide, currentRoller: 
     return false;
   }
   if (pendingCombat.status === "revealingResult") {
+    return false;
+  }
+  if (pendingCombat.status === "boneSacrificeSelect") {
     return false;
   }
   if (currentRoller !== "Both" && currentRoller !== side) {

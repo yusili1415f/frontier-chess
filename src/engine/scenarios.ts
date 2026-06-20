@@ -195,6 +195,8 @@ function scenarioState(entries: Array<Piece & { position: Position }>, turn: Pla
     cards: createDefaultCards(selectedFactions),
     drawState: createDefaultDrawState(),
     turnActions: createDefaultTurnActions(),
+    removedPieces: { Blue: [], Red: [] },
+    cannotActPieceIds: [],
     selectedPieceId: entries[0]?.id,
     log: ["Scenario loaded."],
     moveHistory: [],

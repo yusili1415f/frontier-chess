@@ -1,4 +1,4 @@
-import { cloneBoard, coordinateLabel, getPiecePosition, getSquare, isInsideBoard, setPieceAt } from "./board";
+import { cloneBoard, coordinateLabel, getPiecePosition, getSquare, isHomeTerritory, isInsideBoard, setPieceAt } from "./board";
 import { shouldCannonCaptureUseCombat, shouldTriggerCombat, resolveCombat } from "./combat";
 import { getCombatProfileNameForPiece } from "./data/classProfiles";
 import { classifyMove, getLegalMove, getLegalMovesForPiece } from "./movement";
@@ -6,8 +6,8 @@ import { applyPromotionIfNeeded } from "./promotion";
 import { createStartingPosition } from "./setup";
 import { getCheckedSides } from "./kingThreat";
 import { DEFAULT_SELECTED_FACTIONS } from "../data/factions/testFactions";
-import { applyCardDrawTriggersAfterMove, completeActiveMoveCard, createDefaultCards, createDefaultDrawState, createDefaultTurnActions, getAdvanceMoves } from "./cards/cardEngine";
-import { CombatModifier, ForcedDice, GameState, LegalMove, MoveRecord, Piece, PlayerSide, Position } from "./types";
+import { applyCardDrawTriggersAfterMove, completeActiveMoveCard, createDefaultCards, createDefaultDrawState, createDefaultTurnActions, getAdvanceMoves, getEligibleBoneRevivalPieces, getEmptyHomeZoneSquares, moveCardFromHandToDiscard } from "./cards/cardEngine";
+import { CombatModifier, ForcedDice, GameState, LegalMove, MoveRecord, PendingCombat, Piece, PlayerSide, Position } from "./types";
 
 export function createInitialGameState(): GameState {
   const { board, pieces } = createStartingPosition();
@@ -21,6 +21,8 @@ export function createInitialGameState(): GameState {
     cards: createDefaultCards(selectedFactions),
     drawState: createDefaultDrawState(),
     turnActions: createDefaultTurnActions(),
+    removedPieces: { Blue: [], Red: [] },
+    cannotActPieceIds: [],
     log: ["Blue moves first.", "Decks shuffled."],
     moveHistory: [],
   };
@@ -32,7 +34,7 @@ export function selectPiece(state: GameState, pieceId?: string): GameState {
   }
 
   const piece = state.pieces[pieceId];
-  if (!piece || piece.side !== state.turn) {
+  if (!piece || piece.side !== state.turn || state.cannotActPieceIds.includes(pieceId)) {
     return state;
   }
 
@@ -234,6 +236,181 @@ export function skipCrownbreakerPostCombatMove(state: GameState, side: PlayerSid
   }, `${side} skips Crownbreaker post-combat move.`));
 }
 
+export function selectBoneRevivalPiece(state: GameState, side: PlayerSide, removedPieceId: string): GameState {
+  const activeCard = state.activeMoveCard;
+  if (
+    !activeCard ||
+    activeCard.side !== side ||
+    (activeCard.cardName !== "Raise the Fallen" && activeCard.cardName !== "Necromancer's Bell") ||
+    activeCard.phase !== "selectRemovedPiece"
+  ) {
+    return state;
+  }
+  const eligible = getEligibleBoneRevivalPieces(state, side, activeCard.cardDefinitionId ?? "");
+  if (!eligible.some((piece) => piece.pieceId === removedPieceId)) {
+    return state;
+  }
+  return {
+    ...state,
+    activeMoveCard: {
+      ...activeCard,
+      selectedRemovedPieceId: removedPieceId,
+      phase: "selectHomeSquare",
+    },
+    log: [`${side} chooses ${removedPieceId} to return.`, ...state.log],
+  };
+}
+
+export function getBoneRevivalHomeSquares(state: GameState): Position[] {
+  const activeCard = state.activeMoveCard;
+  if (
+    !activeCard ||
+    (activeCard.cardName !== "Raise the Fallen" && activeCard.cardName !== "Necromancer's Bell") ||
+    activeCard.phase !== "selectHomeSquare" ||
+    !activeCard.selectedRemovedPieceId
+  ) {
+    return [];
+  }
+  return getEmptyHomeZoneSquares(state, activeCard.side);
+}
+
+export function applyBoneRevivalPlacement(state: GameState, to: Position): GameState {
+  const activeCard = state.activeMoveCard;
+  if (
+    !activeCard ||
+    (activeCard.cardName !== "Raise the Fallen" && activeCard.cardName !== "Necromancer's Bell") ||
+    activeCard.phase !== "selectHomeSquare" ||
+    !activeCard.selectedRemovedPieceId ||
+    !isHomeTerritory(activeCard.side, to) ||
+    getSquare(state.board, to)?.pieceId
+  ) {
+    return state;
+  }
+  const removed = state.removedPieces[activeCard.side].find((piece) => piece.pieceId === activeCard.selectedRemovedPieceId);
+  if (!removed) {
+    return state;
+  }
+  const restoredPiece: Piece = {
+    id: removed.pieceId,
+    side: removed.side,
+    type: removed.type,
+    promoted: removed.wasPromoted || undefined,
+  };
+  const board = setPieceAt(cloneBoard(state.board), to, restoredPiece.id);
+  const pieces = {
+    ...state.pieces,
+    [restoredPiece.id]: restoredPiece,
+  };
+  const nextTurn = oppositeSide(state.turn);
+  const remainingRemoved = state.removedPieces[activeCard.side].filter((piece) => piece.pieceId !== removed.pieceId);
+  const discarded = moveCardFromHandToDiscard(state, activeCard.side, activeCard.cardId);
+  const checkedSides = getCheckedSides({
+    ...discarded,
+    board,
+    pieces,
+    turn: nextTurn,
+    selectedPieceId: undefined,
+  });
+  const move: LegalMove = {
+    from: to,
+    to,
+    kind: "move",
+    classification: {
+      legal: true,
+      kind: "normalMove",
+      from: to,
+      to,
+      reason: `${activeCard.cardName} revival.`,
+    },
+  };
+  const record: MoveRecord = {
+    text: `Turn ${state.turnNumber} - ${activeCard.side} uses ${activeCard.cardName}: returns ${removed.wasPromoted ? "promoted " : ""}${removed.type} to ${coordinateLabel(to)}. Returned ${removed.type} cannot move or capture this turn.`,
+    turnNumber: state.turnNumber,
+    player: state.turn,
+    attacker: restoredPiece,
+    move,
+    checkedSides: checkedSides.length ? checkedSides : undefined,
+  };
+  return {
+    ...discarded,
+    board,
+    pieces,
+    removedPieces: {
+      ...discarded.removedPieces,
+      [activeCard.side]: remainingRemoved,
+    },
+    cannotActPieceIds: [...new Set([...discarded.cannotActPieceIds, restoredPiece.id])],
+    activeMoveCard: undefined,
+    selectedPieceId: undefined,
+    turn: nextTurn,
+    turnNumber: state.turnNumber + 1,
+    turnActions: {
+      ...state.turnActions,
+      [nextTurn]: {
+        voluntaryDiscardUsedThisTurn: false,
+      },
+    },
+    lastMove: record,
+    moveHistory: [record, ...state.moveHistory],
+    log: [record.text, ...discarded.log],
+  };
+}
+
+export function applySmokeBombEscape(state: GameState, pendingCombat: PendingCombat, escapeSquare: Position): GameState {
+  const smoke = pendingCombat.smokeBombState;
+  const attacker = state.pieces[pendingCombat.attackerPieceId];
+  const bishop = smoke ? state.pieces[smoke.bishopPieceId] : undefined;
+  const legal = smoke?.selectedEscapeSquare
+    ? samePosition(smoke.selectedEscapeSquare, escapeSquare)
+    : smoke?.legalEscapeSquares.some((square) => samePosition(square, escapeSquare));
+  if (!smoke || !attacker || !bishop || bishop.type !== "Bishop" || !legal) {
+    return state;
+  }
+
+  const promotedAttacker = applyPromotionIfNeeded(attacker, smoke.bishopOriginalSquare);
+  const pieces = {
+    ...state.pieces,
+    [attacker.id]: promotedAttacker,
+  };
+  const boardWithoutAttacker = setPieceAt(cloneBoard(state.board), pendingCombat.attackerSquare, undefined);
+  const boardWithoutBishop = setPieceAt(boardWithoutAttacker, smoke.bishopOriginalSquare, undefined);
+  const boardWithBishop = setPieceAt(boardWithoutBishop, escapeSquare, bishop.id);
+  const board = setPieceAt(boardWithBishop, smoke.bishopOriginalSquare, attacker.id);
+  const move: LegalMove = {
+    from: pendingCombat.attackerSquare,
+    to: smoke.bishopOriginalSquare,
+    kind: "capture",
+    classification: {
+      legal: true,
+      kind: "combatCapture",
+      from: pendingCombat.attackerSquare,
+      to: smoke.bishopOriginalSquare,
+      reason: "Smoke Bomb escape.",
+      targetPieceId: bishop.id,
+      targetPiece: bishop,
+    },
+  };
+  const record: MoveRecord = {
+    text: `Turn ${state.turnNumber} - ${attacker.side} ${attacker.type} ${coordinateLabel(pendingCombat.attackerSquare)} attacks ${bishop.side} Bishop on ${coordinateLabel(smoke.bishopOriginalSquare)}. ${bishop.side} plays Smoke Bomb. ${bishop.side} Bishop escapes to ${coordinateLabel(escapeSquare)}. ${attacker.side} ${attacker.type} moves into ${coordinateLabel(smoke.bishopOriginalSquare)}. ${bishop.side} Bishop is not captured.`,
+    turnNumber: state.turnNumber,
+    player: state.turn,
+    attacker: promotedAttacker,
+    defender: bishop,
+    move,
+    combat: pendingCombatToCombatResult(pendingCombat, attacker, bishop),
+    captureType: "Combat",
+    promotedPiece: wasPromoted(attacker, promotedAttacker) ? promotedAttacker : undefined,
+    promotionProfileName: wasPromoted(attacker, promotedAttacker) ? getCombatProfileNameForPiece(promotedAttacker) : undefined,
+  };
+  const discarded = moveCardFromHandToDiscard(state, smoke.side, smoke.cardInstanceId);
+  return finishMove({
+    ...discarded,
+    board: state.board,
+    pieces: state.pieces,
+    log: [`${smoke.side} plays Smoke Bomb.`, ...discarded.log],
+  }, board, pieces, record);
+}
+
 export function applyMove(state: GameState, pieceId: string, move: LegalMove): GameState {
   const attacker = state.pieces[pieceId];
   const defenderId = getSquare(state.board, move.to)?.pieceId;
@@ -328,10 +505,18 @@ function applyCombatMove(state: GameState, move: LegalMove, attacker: Piece, def
   if (combat.attackerWon) {
     const promotedAttacker = applyPromotionIfNeeded(attacker, move.to);
     delete pieces[defender.id];
-    pieces[attacker.id] = promotedAttacker;
-    board = setPieceAt(boardAfterLeaving, move.to, attacker.id);
+    if (state.forcedDice?.lastStrikeSuccess) {
+      delete pieces[attacker.id];
+      board = boardAfterLeaving;
+    } else {
+      pieces[attacker.id] = promotedAttacker;
+      board = setPieceAt(boardAfterLeaving, move.to, attacker.id);
+    }
     capturedPieceId = defender.id;
     winner = defender.type === "King" ? attacker.side : undefined;
+    if (state.forcedDice?.lastStrikeSuccess && attacker.type === "King") {
+      winner = defender.side;
+    }
   } else {
     delete pieces[attacker.id];
     board = setPieceAt(boardAfterLeaving, move.to, defender.id);
@@ -340,7 +525,7 @@ function applyCombatMove(state: GameState, move: LegalMove, attacker: Piece, def
   }
 
   const removedPiece = combat.attackerWon ? defender : attacker;
-  const recordAttacker = combat.attackerWon ? pieces[attacker.id] : attacker;
+  const recordAttacker = combat.attackerWon ? pieces[attacker.id] ?? attacker : attacker;
   const record: MoveRecord = {
     text: formatCombat(state.turnNumber, attacker, defender, move, combat),
     turnNumber: state.turnNumber,
@@ -352,6 +537,7 @@ function applyCombatMove(state: GameState, move: LegalMove, attacker: Piece, def
     combat,
     captureType: "Combat",
     removedPiece,
+    additionalRemovedPieces: state.forcedDice?.lastStrikeSuccess && combat.attackerWon ? [attacker] : undefined,
     cannon: classification.cannon,
     promotedPiece: combat.attackerWon && wasPromoted(attacker, recordAttacker) ? recordAttacker : undefined,
     promotionProfileName: combat.attackerWon && wasPromoted(attacker, recordAttacker)
@@ -370,6 +556,18 @@ function finishMove(
   winner?: PlayerSide,
 ): GameState {
   const nextTurn = winner ? state.turn : oppositeSide(state.turn);
+  const removedEntries = [record.removedPiece, ...(record.additionalRemovedPieces ?? [])]
+    .filter((piece): piece is Piece => Boolean(piece))
+    .filter((piece) => piece.type !== "King")
+    .map((piece) => ({
+      pieceId: piece.id,
+      side: piece.side,
+      type: piece.type,
+      wasPromoted: piece.promoted || undefined,
+      removedFrom: piece.id === record.attacker.id ? record.move.from : record.move.to,
+      removedReason: "captured" as const,
+      removedTurn: state.turnNumber,
+    }));
   const checkedSides = winner
     ? []
     : getCheckedSides({
@@ -391,6 +589,11 @@ function finishMove(
     pieces,
     turn: nextTurn,
     turnNumber: winner ? state.turnNumber : state.turnNumber + 1,
+    removedPieces: removedEntries.reduce<GameState["removedPieces"]>((removedPieces, entry) => ({
+      ...removedPieces,
+      [entry.side]: [...removedPieces[entry.side], entry],
+    }), state.removedPieces),
+    cannotActPieceIds: state.cannotActPieceIds.filter((pieceId) => pieces[pieceId]?.side !== nextTurn),
     turnActions: winner
       ? state.turnActions
       : {
@@ -419,6 +622,8 @@ export function setForcedDice(state: GameState, forcedDice: ForcedDice): GameSta
       defenderValue: forcedDice.defenderValue,
       attackerModifiers: forcedDice.attackerModifiers,
       defenderModifiers: forcedDice.defenderModifiers,
+      lastStrikeDieIndex: forcedDice.lastStrikeDieIndex,
+      lastStrikeSuccess: forcedDice.lastStrikeSuccess,
     },
   };
 }
@@ -466,7 +671,48 @@ function formatCombat(
   const forced = combat.forcedDice ? " Forced dice debug mode." : "";
   const attackerModifiers = formatCombatModifiers(combat.attackerModifiers);
   const defenderModifiers = formatCombatModifiers(combat.defenderModifiers);
-  return `Turn ${turnNumber} - ${label(attacker)} ${coordinateLabel(move.from)} attacks ${label(defender)} on ${coordinateLabel(move.to)}. Combat: ${getCombatProfileNameForPiece(attacker)} rolls ${combat.attackerRollIndex + 1} -> profile value ${combat.attackerBaseValue}.${attackerModifiers} Final ${combat.attackerFinalValue}. ${getCombatProfileNameForPiece(defender)} rolls ${combat.defenderRollIndex + 1} -> profile value ${combat.defenderBaseValue}.${defenderModifiers} Final ${combat.defenderFinalValue}. Attacker wins ties.${forced} ${winner} wins. ${removed} removed.`;
+  const lastStrike = combat.lastStrikeDieIndex !== undefined
+    ? ` Last Strike roll: ${combat.lastStrikeDieIndex + 1}. ${combat.lastStrikeSuccess ? `${label(attacker)} is also captured.` : "No additional effect."}`
+    : "";
+  return `Turn ${turnNumber} - ${label(attacker)} ${coordinateLabel(move.from)} attacks ${label(defender)} on ${coordinateLabel(move.to)}. Combat: ${getCombatProfileNameForPiece(attacker)} rolls ${combat.attackerRollIndex + 1} -> profile value ${combat.attackerBaseValue}.${attackerModifiers} Final ${combat.attackerFinalValue}. ${getCombatProfileNameForPiece(defender)} rolls ${combat.defenderRollIndex + 1} -> profile value ${combat.defenderBaseValue}.${defenderModifiers} Final ${combat.defenderFinalValue}. Attacker wins ties.${forced} ${winner} wins. ${removed} removed.${lastStrike}`;
+}
+
+function pendingCombatToCombatResult(pendingCombat: PendingCombat, attacker: Piece, defender: Piece): NonNullable<MoveRecord["combat"]> {
+  const attackerBaseValue = pendingCombat.attackerProfileValue ?? 0;
+  const defenderBaseValue = pendingCombat.defenderProfileValue ?? 0;
+  const attackerFinalValue = pendingCombat.attackerFinalValue ?? attackerBaseValue;
+  const defenderFinalValue = pendingCombat.defenderFinalValue ?? defenderBaseValue;
+  const attackerWon = attackerFinalValue >= defenderFinalValue;
+  return {
+    attackerId: attacker.id,
+    defenderId: defender.id,
+    attackerType: attacker.type,
+    defenderType: defender.type,
+    attackerRollIndex: pendingCombat.attackerDieIndex ?? 0,
+    defenderRollIndex: pendingCombat.defenderDieIndex ?? 0,
+    attackerOriginalRollIndex: pendingCombat.attackerOriginalDieIndex,
+    defenderOriginalRollIndex: pendingCombat.defenderOriginalDieIndex,
+    attackerBaseValue,
+    defenderBaseValue,
+    attackerOriginalBaseValue: pendingCombat.attackerOriginalProfileValue,
+    defenderOriginalBaseValue: pendingCombat.defenderOriginalProfileValue,
+    attackerModifiers: pendingCombat.attackerModifiers ?? [],
+    defenderModifiers: pendingCombat.defenderModifiers ?? [],
+    attackerFinalValue,
+    defenderFinalValue,
+    attackerValue: attackerFinalValue,
+    defenderValue: defenderFinalValue,
+    winner: attackerWon ? attacker.side : defender.side,
+    attackerWon,
+    target: pendingCombat.targetSquare,
+    manualRoll: true,
+    attackerAutoRolled: pendingCombat.attackerAutoRolled,
+    defenderAutoRolled: pendingCombat.defenderAutoRolled,
+    attackerUsedGambit: pendingCombat.attackerUsedGambit,
+    defenderUsedGambit: pendingCombat.defenderUsedGambit,
+    lastStrikeDieIndex: pendingCombat.lastStrikeState?.dieIndex,
+    lastStrikeSuccess: pendingCombat.lastStrikeState?.success,
+  };
 }
 
 function formatCombatModifiers(modifiers: CombatModifier[]): string {

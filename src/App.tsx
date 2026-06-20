@@ -25,7 +25,7 @@ import { ScenarioPanel } from "./components/ScenarioPanel";
 import { APP_BUILD_LABEL } from "./appVersion";
 import { cancelActiveMoveCard, completeActiveMoveCard, getAdvanceMoves, moveCardFromHandToDiscard, playCard, rebuildCardsForSelectedFactions, voluntaryDiscardCards } from "./engine/cards/cardEngine";
 import { AIPlayOptions, AIStatus, GameMode, getNextSwitchedMode, isAITurn, isHumanTurn } from "./engine/ai/aiTurn";
-import { applyAdvanceMove, applyBannerDrillMove, applyCrownbreakerPostCombatMove, applyIronCrownActiveMove, applyMove, createInitialGameState, getBannerDrillMoves, getCrownbreakerPostCombatMoves, getIronCrownActiveMoves, getSelectedLegalMoves, pieceAt, selectPiece, setForcedDice, skipBannerDrillCannonMove, skipCrownbreakerPostCombatMove } from "./engine/gameState";
+import { applyAdvanceMove, applyBannerDrillMove, applyBoneRevivalPlacement, applyCrownbreakerPostCombatMove, applyIronCrownActiveMove, applyMove, applySmokeBombEscape, createInitialGameState, getBannerDrillMoves, getBoneRevivalHomeSquares, getCrownbreakerPostCombatMoves, getIronCrownActiveMoves, getSelectedLegalMoves, pieceAt, selectBoneRevivalPiece, selectPiece, setForcedDice, skipBannerDrillCannonMove, skipCrownbreakerPostCombatMove } from "./engine/gameState";
 import { annotateLastMove, createGameSnapshot, GameHistoryEntry, GameSnapshot, MoveActor } from "./engine/history";
 import { clampReplayIndex, createReplaySnapshots, getReplaySnapshot, ReplayState } from "./engine/replay";
 import { createScenario, ScenarioId } from "./engine/scenarios";
@@ -43,10 +43,16 @@ import {
   canSideRollPendingCombat,
   canSideUseGambit,
   canPlayBeforeCombatCard,
+  chooseSmokeBombEscape,
+  chooseBoneSacrificePawn,
+  cancelBoneSacrificeSelection,
   createPendingCombat,
   declineBreakthroughChargeReroll,
+  passLastStrike,
   passPendingCombatGambit,
+  passSmokeBomb,
   pendingCombatToForcedDice,
+  playLastStrike,
   playBeforeCombatCard,
   playPendingCombatGambit,
   rollPendingCombatSide,
@@ -65,8 +71,12 @@ import {
   submitOnlineCardPlay,
   submitOnlineCombatRoll,
   submitOnlineGambitResponse,
+  submitOnlineLastStrikeResponse,
   submitOnlineMove,
   submitOnlineBreakthroughResponse,
+  submitOnlineBoneSacrificeChoice,
+  submitOnlineSmokeBombEscape,
+  submitOnlineSelectRemovedPiece,
   submitOnlineSkipBannerDrillCannon,
   submitOnlineSkipCrownbreakerPostCombat,
   submitOnlineVoluntaryDiscard,
@@ -168,6 +178,10 @@ export function App() {
             : getAdvanceMoves(state, state.selectedPieceId).map((to) => ({ from, to, kind: "move" as const }));
       return moves;
     }
+    if (state.activeMoveCard && state.activeMoveCard.phase === "selectHomeSquare") {
+      const squares = getBoneRevivalHomeSquares(state);
+      return squares.map((to) => ({ from: to, to, kind: "move" as const }));
+    }
     return getSelectedLegalMoves(state);
   }, [humanTurn, state]);
   const selectedPiece = displayState.selectedPieceId ? displayState.pieces[displayState.selectedPieceId] : undefined;
@@ -236,7 +250,9 @@ export function App() {
     }
 
     if (
-      Date.now() >= pendingCombatContext.pendingCombat.rollDeadlineAt ||
+      (pendingCombatContext.pendingCombat.status !== "smokeBombEscape" &&
+        pendingCombatContext.pendingCombat.status !== "lastStrikeWindow" &&
+        Date.now() >= pendingCombatContext.pendingCombat.rollDeadlineAt) ||
       (pendingCombatContext.pendingCombat.status === "gambitWindow" &&
         Date.now() >= (pendingCombatContext.pendingCombat.gambitWindowDeadlineAt ?? Number.POSITIVE_INFINITY))
     ) {
@@ -248,6 +264,10 @@ export function App() {
 
   useEffect(() => {
     if (!onlineActive || !onlineGameId || !onlineGame?.pendingCombat) {
+      return;
+    }
+
+    if (onlineGame.pendingCombat.status === "smokeBombEscape" || onlineGame.pendingCombat.status === "lastStrikeWindow") {
       return;
     }
 
@@ -353,6 +373,10 @@ export function App() {
 
     const clickedPiece = pieceAt(state, position);
     if (onlineActive) {
+      if (state.activeMoveCard?.phase === "selectHomeSquare" && onlineRole === state.activeMoveCard.side) {
+        submitSelectedOnlineMove(position, state.activeMoveCard.selectedRemovedPieceId ?? state.activeMoveCard.cardId);
+        return;
+      }
       if (clickedPiece?.side === state.turn && clickedPiece.side === onlineRole) {
         setState((current) => selectPiece(current, clickedPiece.id));
         return;
@@ -369,6 +393,11 @@ export function App() {
       return;
     }
 
+    if (state.activeMoveCard?.phase === "selectHomeSquare") {
+      applyTrackedActiveCardMove(position);
+      return;
+    }
+
     if (!state.selectedPieceId) {
       return;
     }
@@ -382,6 +411,10 @@ export function App() {
   }
 
   function applyTrackedActiveCardMove(position: Position): boolean {
+    if (state.activeMoveCard?.phase === "selectHomeSquare") {
+      const beforeSnapshot = createGameSnapshot(state, aiMoveExplanation, playOutcome);
+      return applyTrackedCardState(applyBoneRevivalPlacement(state, position), beforeSnapshot);
+    }
     if (!state.selectedPieceId || !state.activeMoveCard) {
       return false;
     }
@@ -482,14 +515,17 @@ export function App() {
 
     const attacker = state.pieces[pieceId];
     const defender = pieceAt(state, legalMove.to);
-    const shouldUseManualCombat = combatRollMode === "manual" &&
+    const shouldUsePendingCombat = (
+      combatRollMode === "manual" ||
+      Boolean(defender && canSakuraReactionMatter(state, defender))
+    ) &&
       !onlineActive &&
       gameMode !== "ai-vs-ai" &&
       legalMove.classification?.kind === "combatCapture" &&
       attacker &&
       defender;
 
-    if (shouldUseManualCombat && attacker && defender) {
+    if (shouldUsePendingCombat && attacker && defender) {
       cancelPendingAI();
       setPendingCombatContext({
         actor,
@@ -531,6 +567,13 @@ export function App() {
     setHistoryEntries((entries) => [...entries, { actor, before: beforeSnapshot, after: afterSnapshot, record: after.lastMove! }]);
     setReplay({ active: false, index: historyEntries.length + 1 });
     return true;
+  }
+
+  function canSakuraReactionMatter(gameState: GameState, defender: NonNullable<ReturnType<typeof pieceAt>>): boolean {
+    return gameState.selectedFactions[defender.side] === "sakura_shogunate" &&
+      (defender.type === "Bishop" || defender.type === "Guard") &&
+      (gameState.cards[defender.side].hand.some((card) => card.definitionId === "smoke_bomb" || card.id.startsWith("smoke_bomb")) ||
+        gameState.cards[defender.side].hand.some((card) => card.definitionId === "last_strike" || card.id.startsWith("last_strike")));
   }
 
   function performAIMove(turnKey: string) {
@@ -697,6 +740,17 @@ export function App() {
       return;
     }
     setState((current) => voluntaryDiscardCards(current, side, cardIds));
+  }
+
+  function handleSelectRemovedPiece(side: PlayerSide, removedPieceId: string) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineSelectRemovedPiece(onlineGameId, onlinePlayerId, side, removedPieceId).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setState((current) => selectBoneRevivalPiece(current, side, removedPieceId));
   }
 
   function handleGameModeChange(nextMode: GameMode) {
@@ -931,15 +985,16 @@ export function App() {
     }
   }
 
-  async function submitSelectedOnlineMove(position: Position) {
-    if (!onlineGameId || !onlinePlayerId || !state.selectedPieceId) {
+  async function submitSelectedOnlineMove(position: Position, overridePieceId?: string) {
+    const pieceId = overridePieceId ?? state.selectedPieceId;
+    if (!onlineGameId || !onlinePlayerId || !pieceId) {
       return;
     }
 
     setOnlineError(undefined);
     try {
       await submitOnlineMove(onlineGameId, onlinePlayerId, {
-        pieceId: state.selectedPieceId,
+        pieceId,
         to: position,
         combatRollMode,
       });
@@ -977,7 +1032,7 @@ export function App() {
       return {
         ...current,
         beforeState: moveCardFromHandToDiscard(current.beforeState, side, "basic_gambit"),
-        pendingCombat: playPendingCombatGambit(current.pendingCombat, side),
+        pendingCombat: playPendingCombatGambit(current.pendingCombat, side, {}, current.beforeState),
       };
     });
   }
@@ -991,7 +1046,7 @@ export function App() {
       return;
     }
     setPendingCombatContext((current) => current
-      ? { ...current, pendingCombat: passPendingCombatGambit(current.pendingCombat, side) }
+      ? { ...current, pendingCombat: passPendingCombatGambit(current.pendingCombat, side, current.beforeState) }
       : current);
   }
 
@@ -1018,6 +1073,123 @@ export function App() {
     }
     setPendingCombatContext((current) => current
       ? { ...current, pendingCombat: declineBreakthroughChargeReroll(current.pendingCombat, current.beforeState) }
+      : current);
+  }
+
+  function chooseBonePawn(side: PlayerSide, pawnPieceId: string) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineBoneSacrificeChoice(onlineGameId, onlinePlayerId, side, pawnPieceId).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => {
+      if (!current) {
+        return current;
+      }
+      const played = chooseBoneSacrificePawn(current.pendingCombat, current.beforeState, side, pawnPieceId);
+      return {
+        ...current,
+        beforeState: played.gameState,
+        pendingCombat: played.pendingCombat,
+      };
+    });
+  }
+
+  function cancelBoneSacrifice() {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || !pendingCombat?.boneSacrificeState || pendingCombat.boneSacrificeState.side !== onlineRole) {
+        return;
+      }
+      submitOnlineBoneSacrificeChoice(onlineGameId, onlinePlayerId, pendingCombat.boneSacrificeState.side).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => current
+      ? { ...current, pendingCombat: cancelBoneSacrificeSelection(current.pendingCombat) }
+      : current);
+  }
+
+  function useSmokeBomb(side: PlayerSide, escapeSquare: Position) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineSmokeBombEscape(onlineGameId, onlinePlayerId, side, escapeSquare).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => {
+      if (!current || current.pendingCombat.status !== "smokeBombEscape") {
+        return current;
+      }
+      const selected = chooseSmokeBombEscape(current.pendingCombat, side, escapeSquare);
+      if (!selected.smokeBombState?.selectedEscapeSquare) {
+        return current;
+      }
+      const rawAfter = applySmokeBombEscape(current.beforeState, selected, selected.smokeBombState.selectedEscapeSquare);
+      if (rawAfter === current.beforeState || !rawAfter.lastMove) {
+        return undefined;
+      }
+      const after = annotateLastMove(rawAfter, current.actor);
+      const afterSnapshot = createGameSnapshot(after, undefined, undefined);
+      setState(after);
+      setAIMoveExplanation(undefined);
+      setPlayOutcome(undefined);
+      setAIStatus(current.actor === "AI" ? "moved" : "idle");
+      setHistoryEntries((entries) => {
+        const nextEntries = [...entries, { actor: current.actor, before: current.beforeSnapshot, after: afterSnapshot, record: after.lastMove! }];
+        setReplay({ active: false, index: nextEntries.length });
+        return nextEntries;
+      });
+      pendingCombatResolveRef.current = undefined;
+      return undefined;
+    });
+  }
+
+  function skipSmokeBomb() {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || !pendingCombat?.smokeBombState || pendingCombat.smokeBombState.side !== onlineRole) {
+        return;
+      }
+      submitOnlineSmokeBombEscape(onlineGameId, onlinePlayerId, pendingCombat.smokeBombState.side).catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => current
+      ? { ...current, pendingCombat: passSmokeBomb(current.pendingCombat, current.beforeState) }
+      : current);
+  }
+
+  function useLastStrike(side: PlayerSide) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineLastStrikeResponse(onlineGameId, onlinePlayerId, side, "play").catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => {
+      if (!current || current.pendingCombat.status !== "lastStrikeWindow" || current.pendingCombat.lastStrikeState?.side !== side) {
+        return current;
+      }
+      const cardId = current.pendingCombat.lastStrikeState.cardInstanceId;
+      return {
+        ...current,
+        beforeState: moveCardFromHandToDiscard(current.beforeState, side, cardId),
+        pendingCombat: playLastStrike(current.pendingCombat, side),
+      };
+    });
+  }
+
+  function skipLastStrike(side: PlayerSide) {
+    if (onlineActive) {
+      if (!onlineGameId || !onlinePlayerId || side !== onlineRole) {
+        return;
+      }
+      submitOnlineLastStrikeResponse(onlineGameId, onlinePlayerId, side, "pass").catch((error) => setOnlineError(error.message));
+      return;
+    }
+    setPendingCombatContext((current) => current
+      ? { ...current, pendingCombat: passLastStrike(current.pendingCombat) }
       : current);
   }
 
@@ -1115,6 +1287,7 @@ export function App() {
             discardControlSide={discardControlSide}
             onCancelAdvance={handleCancelAdvance}
             onPlayCard={handlePlayCard}
+            onSelectRemovedPiece={handleSelectRemovedPiece}
             onSkipBannerDrillCannon={handleSkipBannerDrillCannon}
             onSkipCrownbreakerPostCombat={handleSkipCrownbreakerPostCombat}
             onVoluntaryDiscard={handleVoluntaryDiscard}
@@ -1235,10 +1408,16 @@ export function App() {
           </div>
           <CombatRollPanel
             currentRoller={getCurrentRoller(gameMode, onlineActive, onlineRole ?? null)}
+            onCancelBoneSacrifice={cancelBoneSacrifice}
+            onChooseBoneSacrificePawn={chooseBonePawn}
             onKeepBreakthrough={keepBreakthrough}
+            onPassLastStrike={skipLastStrike}
+            onPassSmokeBomb={skipSmokeBomb}
             onPassGambit={passGambit}
             onPlayGambit={playGambit}
+            onPlayLastStrike={useLastStrike}
             onRoll={rollPendingCombat}
+            onUseSmokeBomb={useSmokeBomb}
             onUseBreakthrough={useBreakthrough}
             pendingCombat={pendingCombat}
             resolveSecondsRemaining={Math.max(0, Math.ceil(((pendingCombat?.resolveAfterAt ?? 0) - pendingCombatNow) / 1000))}

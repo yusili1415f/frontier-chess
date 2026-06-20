@@ -18,7 +18,7 @@ export function getLegalMovesForPiece(state: GameState, pieceId: string): LegalM
   const piece = state.pieces[pieceId];
   const from = getPiecePosition(state.board, pieceId);
 
-  if (!piece || !from || piece.side !== state.turn || state.winner) {
+  if (!piece || !from || piece.side !== state.turn || state.winner || state.cannotActPieceIds.includes(pieceId)) {
     return [];
   }
 
@@ -63,6 +63,10 @@ export function classifyMove(state: GameState, pieceId: string, to: Position): M
 
   if (piece.side !== state.turn) {
     return { legal: false, kind: "illegal", from, to, reason: "Only the current player can move this piece.", targetPieceId, targetPiece };
+  }
+
+  if (state.cannotActPieceIds.includes(pieceId)) {
+    return { legal: false, kind: "illegal", from, to, reason: "This returned piece cannot move or capture this turn.", targetPieceId, targetPiece };
   }
 
   if (targetPiece?.side === piece.side) {

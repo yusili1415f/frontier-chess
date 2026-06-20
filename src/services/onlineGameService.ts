@@ -1,19 +1,25 @@
 import { doc, getDoc, onSnapshot, runTransaction, setDoc, Unsubscribe } from "firebase/firestore";
 import { getLegalMove } from "../engine/movement";
-import { applyAdvanceMove, applyBannerDrillMove, applyCrownbreakerPostCombatMove, applyIronCrownActiveMove, applyMove, createInitialGameState, getCrownbreakerPostCombatMoves, getIronCrownActiveMoves, skipBannerDrillCannonMove, skipCrownbreakerPostCombatMove } from "../engine/gameState";
+import { applyAdvanceMove, applyBannerDrillMove, applyBoneRevivalPlacement, applyCrownbreakerPostCombatMove, applyIronCrownActiveMove, applyMove, applySmokeBombEscape, createInitialGameState, getCrownbreakerPostCombatMoves, getIronCrownActiveMoves, selectBoneRevivalPiece, skipBannerDrillCannonMove, skipCrownbreakerPostCombatMove } from "../engine/gameState";
 import { annotateLastMove } from "../engine/history";
-import { GameState, PlayerSide, SelectedFactions } from "../engine/types";
+import { GameState, PlayerSide, Position, SelectedFactions } from "../engine/types";
 import { cancelActiveMoveCard, createDefaultCards, createDefaultDrawState, createDefaultTurnActions, moveCardFromHandToDiscard, playCard, voluntaryDiscardCards } from "../engine/cards/cardEngine";
 import {
   autoRollExpiredPendingCombat,
   attachBreakthroughCharge,
   attachCrownbreakerCharge,
+  cancelBoneSacrificeSelection,
+  chooseBoneSacrificePawn,
+  chooseSmokeBombEscape,
   declineBreakthroughChargeReroll,
   canSideUseGambit,
   canPlayBeforeCombatCard,
   createPendingCombat,
+  passLastStrike,
   passPendingCombatGambit,
+  passSmokeBomb,
   pendingCombatToForcedDice,
+  playLastStrike,
   playBeforeCombatCard,
   playPendingCombatGambit,
   rollPendingCombatSide,
@@ -166,6 +172,7 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
     const defender = defenderId ? before.pieces[defenderId] : undefined;
 
     const crownbreakerPostCombat = before.activeMoveCard?.cardName === "Crownbreaker Charge" && before.activeMoveCard.phase === "postCombatMove";
+    const boneRevivalPlacement = (before.activeMoveCard?.cardName === "Raise the Fallen" || before.activeMoveCard?.cardName === "Necromancer's Bell") && before.activeMoveCard.phase === "selectHomeSquare";
     const ironCrownCard = (before.activeMoveCard?.cardName === "Breakthrough Charge" || before.activeMoveCard?.cardName === "Crownbreaker Charge") && !crownbreakerPostCombat
       ? before.activeMoveCard
       : undefined;
@@ -178,7 +185,13 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
       throw new Error("That Iron Crown card move is not legal in the latest online game state.");
     }
 
-    if (pendingLegalMove && moveInput.combatRollMode === "manual" && pendingLegalMove.classification?.kind === "combatCapture" && attacker && defender && !ironCrownCard) {
+    const shouldCreatePendingCombat = pendingLegalMove?.classification?.kind === "combatCapture" &&
+      attacker &&
+      defender &&
+      !ironCrownCard &&
+      (moveInput.combatRollMode === "manual" || canSakuraReactionMatter(before, defender));
+
+    if (pendingLegalMove && shouldCreatePendingCombat && attacker && defender) {
       const pendingCombat = createPendingCombat(before, pendingLegalMove, attacker, defender);
       const serializedState = serializeGameStateForFirestore({ ...before, selectedPieceId: undefined });
       const nextGame: Partial<OnlineGameDocument> = {
@@ -219,6 +232,8 @@ export async function submitOnlineMove(gameId: string, playerId: string, moveInp
         ? applyBannerDrillMove(before, moveInput.pieceId, moveInput.to)
         : crownbreakerPostCombat
           ? applyCrownbreakerPostCombatMove(before, moveInput.pieceId, moveInput.to)
+          : boneRevivalPlacement
+            ? applyBoneRevivalPlacement(before, moveInput.to)
           : ironCrownLegalMove
           ? applyIronCrownActiveMove(before, moveInput.pieceId, ironCrownLegalMove)
           : applyAdvanceMove(before, moveInput.pieceId, moveInput.to)
@@ -372,6 +387,26 @@ export async function submitOnlineSkipCrownbreakerPostCombat(gameId: string, pla
   });
 }
 
+export async function submitOnlineSelectRemovedPiece(gameId: string, playerId: string, side: PlayerSide, removedPieceId: string): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    assertPlayerOwnsTurn(game, playerId, side);
+    const nextState = selectBoneRevivalPiece(game.gameState, side, removedPieceId);
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      gameState: serializedState,
+      moveHistory: serializedState.moveHistory,
+    }));
+  });
+}
+
 export async function submitOnlineBreakthroughResponse(gameId: string, playerId: string, side: PlayerSide, action: "reroll" | "keep"): Promise<void> {
   const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
   await runTransaction(requireFirestore(), async (transaction) => {
@@ -392,6 +427,102 @@ export async function submitOnlineBreakthroughResponse(gameId: string, playerId:
   });
 }
 
+export async function submitOnlineBoneSacrificeChoice(gameId: string, playerId: string, side: PlayerSide, pawnPieceId?: string): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    if (!storedGame.pendingCombat) {
+      throw new Error("There is no pending combat.");
+    }
+    assertPlayerOwnsTurn(storedGame, playerId, side);
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    const result = pawnPieceId
+      ? chooseBoneSacrificePawn(game.pendingCombat!, game.gameState, side, pawnPieceId)
+      : { pendingCombat: cancelBoneSacrificeSelection(game.pendingCombat!), gameState: game.gameState };
+    const serializedState = serializeGameStateForFirestore(result.gameState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      gameState: serializedState,
+      pendingCombat: serializePendingCombatForFirestore(result.pendingCombat),
+    }));
+  });
+}
+
+export async function submitOnlineSmokeBombEscape(gameId: string, playerId: string, side: PlayerSide, escapeSquare?: Position): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    if (!storedGame.pendingCombat) {
+      throw new Error("There is no pending combat.");
+    }
+    assertPlayerOwnsTurn(storedGame, playerId, side);
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    if (!escapeSquare) {
+      const pendingCombat = passSmokeBomb(game.pendingCombat!, game.gameState);
+      transaction.update(ref, sanitizeForFirestoreRecord({
+        updatedAt: Date.now(),
+        pendingCombat: serializePendingCombatForFirestore(pendingCombat),
+      }));
+      return;
+    }
+    const pendingCombat = chooseSmokeBombEscape(game.pendingCombat!, side, escapeSquare);
+    if (!pendingCombat.smokeBombState?.selectedEscapeSquare) {
+      throw new Error("That Smoke Bomb escape square is not legal.");
+    }
+    const nextState = annotateLastMove(
+      applySmokeBombEscape(game.gameState, pendingCombat, pendingCombat.smokeBombState.selectedEscapeSquare),
+      "Human",
+    );
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      status: nextState.winner ? "finished" : "active",
+      currentPlayer: nextState.turn,
+      gameState: serializedState,
+      moveHistory: serializedState.moveHistory,
+      pendingCombat: null,
+      winner: nextState.winner ?? null,
+      reason: nextState.winner ? "kingCaptured" : null,
+    }));
+  });
+}
+
+export async function submitOnlineLastStrikeResponse(gameId: string, playerId: string, side: PlayerSide, action: "play" | "pass"): Promise<void> {
+  const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
+  await runTransaction(requireFirestore(), async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) {
+      throw new Error("Online game was not found.");
+    }
+    const storedGame = snapshot.data() as OnlineGameDocument;
+    if (!storedGame.pendingCombat) {
+      throw new Error("There is no pending combat.");
+    }
+    assertPlayerOwnsTurn(storedGame, playerId, side);
+    const game = deserializeOnlineGameFromFirestore(storedGame);
+    const pendingCombat = action === "play"
+      ? playLastStrike(game.pendingCombat!, side)
+      : passLastStrike(game.pendingCombat!);
+    const nextState = action === "play" && game.pendingCombat?.lastStrikeState
+      ? moveCardFromHandToDiscard(game.gameState, side, game.pendingCombat.lastStrikeState.cardInstanceId)
+      : game.gameState;
+    const serializedState = serializeGameStateForFirestore(nextState);
+    transaction.update(ref, sanitizeForFirestoreRecord({
+      updatedAt: Date.now(),
+      gameState: serializedState,
+      pendingCombat: serializePendingCombatForFirestore(pendingCombat),
+    }));
+  });
+}
+
 export async function submitOnlineGambitResponse(gameId: string, playerId: string, side: PlayerSide, action: "play" | "pass"): Promise<void> {
   const ref = doc(requireFirestore(), GAME_COLLECTION, normalizeGameId(gameId));
   await runTransaction(requireFirestore(), async (transaction) => {
@@ -409,8 +540,8 @@ export async function submitOnlineGambitResponse(gameId: string, playerId: strin
       throw new Error("Gambit cannot be played by this side.");
     }
     const pendingCombat = action === "play"
-      ? playPendingCombatGambit(game.pendingCombat!, side)
-      : passPendingCombatGambit(game.pendingCombat!, side);
+      ? playPendingCombatGambit(game.pendingCombat!, side, {}, game.gameState)
+      : passPendingCombatGambit(game.pendingCombat!, side, game.gameState);
     const nextState = action === "play"
       ? moveCardFromHandToDiscard(game.gameState, side, "basic_gambit")
       : game.gameState;
@@ -468,11 +599,12 @@ export async function autoRollExpiredOnlineCombat(gameId: string): Promise<void>
 
     const game = deserializeOnlineGameFromFirestore(storedGame);
     const pendingCombat = game.pendingCombat;
-    if (!pendingCombat || Date.now() < pendingCombat.rollDeadlineAt) {
+    const revealReady = pendingCombat?.status === "revealingResult" && Date.now() >= (pendingCombat.resolveAfterAt ?? Number.POSITIVE_INFINITY);
+    if (!pendingCombat || (!revealReady && Date.now() < pendingCombat.rollDeadlineAt)) {
       return;
     }
 
-    const rolled = autoRollExpiredPendingCombat(pendingCombat, Date.now(), game.gameState);
+    const rolled = revealReady ? pendingCombat : autoRollExpiredPendingCombat(pendingCombat, Date.now(), game.gameState);
     transaction.update(ref, sanitizeForFirestoreRecord(resolveOrStorePendingCombat(storedGame, rolled)));
   });
 }
@@ -760,6 +892,17 @@ function prepareCrownbreakerAfterOnlineCombat(
         selectedPieceId: undefined,
         log: [`${crown.side} Crownbreaker Charge complete: no adjacent empty square.`, ...resolvedState.log],
       };
+}
+
+function canSakuraReactionMatter(gameState: GameState, defender: GameState["pieces"][string]): boolean {
+  return gameState.selectedFactions[defender.side] === "sakura_shogunate" &&
+    (defender.type === "Bishop" || defender.type === "Guard") &&
+    gameState.cards[defender.side].hand.some((card) =>
+      card.definitionId === "smoke_bomb" ||
+      card.id.startsWith("smoke_bomb") ||
+      card.definitionId === "last_strike" ||
+      card.id.startsWith("last_strike")
+    );
 }
 
 function sanitizeForFirestore(value: unknown): unknown {

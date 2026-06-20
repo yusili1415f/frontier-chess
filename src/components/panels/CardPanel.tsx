@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { GameCard } from "../../engine/cards/cardTypes";
-import { cardDefinitionId } from "../../engine/cards/cardEngine";
+import { cardDefinitionId, canPlayCard, getEligibleBoneRevivalPieces } from "../../engine/cards/cardEngine";
 import { canPlayBeforeCombatCard } from "../../engine/pendingCombat";
 import { GameState, PendingCombat, PlayerDrawState, PlayerSide } from "../../engine/types";
 
@@ -9,6 +9,7 @@ type CardPanelProps = {
   discardControlSide?: PlayerSide;
   onCancelAdvance: () => void;
   onPlayCard: (side: PlayerSide, cardId: string) => void;
+  onSelectRemovedPiece?: (side: PlayerSide, removedPieceId: string) => void;
   onSkipBannerDrillCannon?: () => void;
   onSkipCrownbreakerPostCombat?: () => void;
   onVoluntaryDiscard?: (side: PlayerSide, cardIds: string[]) => void;
@@ -22,6 +23,7 @@ export function CardPanel({
   discardControlSide,
   onCancelAdvance,
   onPlayCard,
+  onSelectRemovedPiece,
   onSkipBannerDrillCannon,
   onSkipCrownbreakerPostCombat,
   onVoluntaryDiscard,
@@ -59,6 +61,15 @@ export function CardPanel({
           ) : null}
           {canAct && state.activeMoveCard.cardName === "Crownbreaker Charge" && state.activeMoveCard.phase === "postCombatMove" ? (
             <button onClick={onSkipCrownbreakerPostCombat} type="button">Skip post-combat move</button>
+          ) : null}
+          {canAct && (state.activeMoveCard.cardName === "Raise the Fallen" || state.activeMoveCard.cardName === "Necromancer's Bell") && state.activeMoveCard.phase === "selectRemovedPiece" ? (
+            <div className="gambit-actions">
+              {getEligibleBoneRevivalPieces(state, state.activeMoveCard.side, state.activeMoveCard.cardDefinitionId ?? "").map((piece) => (
+                <button key={piece.pieceId} onClick={() => onSelectRemovedPiece?.(state.activeMoveCard!.side, piece.pieceId)} type="button">
+                  Return {piece.wasPromoted ? "promoted " : ""}{piece.type} {piece.pieceId}
+                </button>
+              ))}
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -166,7 +177,10 @@ function canPlayHandCard(state: GameState, pendingCombat: PendingCombat | undefi
     (definitionId === "basic_advance" ||
       definitionId === "banner_drill" ||
       definitionId === "breakthrough_charge" ||
-      definitionId === "crownbreaker_charge") &&
+      definitionId === "crownbreaker_charge" ||
+      definitionId === "raise_the_fallen" ||
+      definitionId === "necromancers_bell") &&
+    canPlayCard(state, side, card.id, { timing: card.timing }) &&
     card.implemented;
 }
 
@@ -186,6 +200,11 @@ function describeActiveCard(state: GameState): string {
   }
   if (active.cardName === "Crownbreaker Charge") {
     return `${active.side}: select a friendly Knight. If it attacks, it gets +1 and may move after winning.`;
+  }
+  if (active.cardName === "Raise the Fallen" || active.cardName === "Necromancer's Bell") {
+    return active.phase === "selectHomeSquare"
+      ? `${active.side}: choose an empty home-zone square for the returned piece.`
+      : `${active.side}: choose a removed piece to return.`;
   }
   if (active.phase === "moveCannon") {
     return `${active.side}: you may move one adjacent friendly Cannon 1 orthogonal space. Cannon cannot capture.`;

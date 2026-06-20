@@ -34,10 +34,11 @@ export type ActiveMoveCard = {
   side: PlayerSide;
   cardId: string;
   cardDefinitionId?: string;
-  cardName: "Advance" | "Banner Drill" | "Breakthrough Charge" | "Crownbreaker Charge";
-  phase?: "selectPiece" | "moveGuard" | "moveCannon" | "selectDestination" | "postCombatMove";
+  cardName: "Advance" | "Banner Drill" | "Breakthrough Charge" | "Crownbreaker Charge" | "Raise the Fallen" | "Necromancer's Bell";
+  phase?: "selectPiece" | "moveGuard" | "moveCannon" | "selectDestination" | "postCombatMove" | "selectRemovedPiece" | "selectHomeSquare";
   selectedGuardId?: string;
   selectedPieceId?: string;
+  selectedRemovedPieceId?: string;
   captureCountThisTurn?: number;
 };
 
@@ -58,6 +59,20 @@ export type Piece = {
   type: PieceType;
   promoted?: boolean;
 };
+
+export type RemovedPieceReason = "captured" | "sacrificed";
+
+export type RemovedPiece = {
+  pieceId: string;
+  side: PlayerSide;
+  type: PieceType;
+  wasPromoted?: boolean;
+  removedFrom: Position;
+  removedReason: RemovedPieceReason;
+  removedTurn: number;
+};
+
+export type RemovedPiecesBySide = Record<PlayerSide, RemovedPiece[]>;
 
 export type BoardSquare = {
   position: Position;
@@ -140,6 +155,8 @@ export type CombatResult = {
   defenderAutoRolled?: boolean;
   attackerUsedGambit?: boolean;
   defenderUsedGambit?: boolean;
+  lastStrikeDieIndex?: number;
+  lastStrikeSuccess?: boolean;
 };
 
 export type ForcedDice = {
@@ -158,14 +175,19 @@ export type ForcedDice = {
   defenderUsedGambit?: boolean;
   attackerModifiers?: CombatModifier[];
   defenderModifiers?: CombatModifier[];
+  lastStrikeDieIndex?: number;
+  lastStrikeSuccess?: boolean;
 };
 
 export type PendingCombatStatus =
   | "waitingForAttackerRoll"
   | "waitingForDefenderRoll"
   | "waitingForBothRolls"
+  | "boneSacrificeSelect"
   | "breakthroughWindow"
   | "gambitWindow"
+  | "smokeBombEscape"
+  | "lastStrikeWindow"
   | "revealingResult"
   | "resolved";
 
@@ -222,6 +244,34 @@ export interface PendingCombat {
     postCombatMoveUsed?: boolean;
     captureCountThisTurn: number;
   };
+  smokeBombState?: {
+    side: PlayerSide;
+    bishopPieceId: string;
+    attackerPieceId: string;
+    bishopOriginalSquare: Position;
+    legalEscapeSquares: Position[];
+    selectedEscapeSquare?: Position;
+    cardInstanceId: string;
+    passed?: boolean;
+  };
+  lastStrikeState?: {
+    side: PlayerSide;
+    capturedPieceId: string;
+    capturedPieceType: "Bishop" | "Guard";
+    attackingPieceId: string;
+    cardInstanceId: string;
+    dieIndex?: number;
+    success?: boolean;
+    resolved: boolean;
+    passed?: boolean;
+  };
+  boneSacrificeState?: {
+    side: PlayerSide;
+    cardInstanceId: string;
+    attackerPieceId: string;
+    legalPawnPieceIds: string[];
+    selectedPawnPieceId?: string;
+  };
   gambitWindowStartedAt?: number;
   gambitWindowDeadlineAt?: number;
   resultRevealedAt?: number;
@@ -246,6 +296,7 @@ export type MoveRecord = {
   combat?: CombatResult;
   captureType?: "Direct" | "Combat";
   removedPiece?: Piece;
+  additionalRemovedPieces?: Piece[];
   cannon?: CannonCaptureDetails;
   promotedPiece?: Piece;
   promotionProfileName?: string;
@@ -261,6 +312,8 @@ export type GameState = {
   cards: CardStateBySide;
   drawState: DrawStateBySide;
   turnActions: TurnActionStateBySide;
+  removedPieces: RemovedPiecesBySide;
+  cannotActPieceIds: string[];
   activeMoveCard?: ActiveMoveCard;
   selectedPieceId?: string;
   log: string[];

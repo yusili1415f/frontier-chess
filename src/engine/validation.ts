@@ -2172,6 +2172,8 @@ function customState(entries: Array<Piece & { position: Position }>, turn: "Blue
     cards: createDefaultCards(selectedFactions),
     drawState: createDefaultDrawState(),
     turnActions: createDefaultTurnActions(),
+    removedPieces: { Blue: [], Red: [] },
+    cannotActPieceIds: [],
     log: [],
     moveHistory: [],
   };

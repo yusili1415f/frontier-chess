@@ -70,6 +70,8 @@ export function resolveCombat(
     defenderAutoRolled: forcedDice.defenderAutoRolled || undefined,
     attackerUsedGambit: forcedDice.attackerUsedGambit || undefined,
     defenderUsedGambit: forcedDice.defenderUsedGambit || undefined,
+    lastStrikeDieIndex: forcedDice.lastStrikeDieIndex,
+    lastStrikeSuccess: forcedDice.lastStrikeSuccess,
   };
 }
 

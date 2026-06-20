@@ -133,7 +133,7 @@ export function autoRollExpiredPendingCombat(pendingCombat: PendingCombat, now =
       ...pendingCombat,
       attackerPassedGambit: pendingCombat.attackerPassedGambit || !pendingCombat.attackerUsedGambit,
       defenderPassedGambit: pendingCombat.defenderPassedGambit || !pendingCombat.defenderUsedGambit,
-    });
+    }, gameState);
   }
 
   if (now < pendingCombat.rollDeadlineAt || pendingCombat.status === "revealingResult" || pendingCombat.status === "resolved") {
@@ -176,6 +176,8 @@ export function pendingCombatToForcedDice(pendingCombat: PendingCombat) {
     defenderUsedGambit: pendingCombat.defenderUsedGambit,
     attackerModifiers: pendingCombat.attackerModifiers,
     defenderModifiers: pendingCombat.defenderModifiers,
+    lastStrikeDieIndex: pendingCombat.lastStrikeState?.dieIndex,
+    lastStrikeSuccess: pendingCombat.lastStrikeState?.success,
   };
 }
 
@@ -251,6 +253,7 @@ export function playPendingCombatGambit(
   pendingCombat: PendingCombat,
   side: PlayerSide,
   options: { dieIndex?: number } = {},
+  gameState?: GameState,
 ): PendingCombat {
   if (pendingCombat.status !== "gambitWindow") {
     return pendingCombat;
@@ -265,7 +268,7 @@ export function playPendingCombatGambit(
       attackerProfileValue: pendingCombat.attackerProfile[dieIndex],
       attackerFinalValue: applyModifiers(pendingCombat.attackerProfile[dieIndex], pendingCombat.attackerModifiers ?? []),
       attackerUsedGambit: true,
-    });
+    }, gameState);
   }
   if (side === pendingCombat.defenderSide && !pendingCombat.defenderUsedGambit && !pendingCombat.defenderPassedGambit) {
     return withGambitResponse({
@@ -276,22 +279,104 @@ export function playPendingCombatGambit(
       defenderProfileValue: pendingCombat.defenderProfile[dieIndex],
       defenderFinalValue: applyModifiers(pendingCombat.defenderProfile[dieIndex], pendingCombat.defenderModifiers ?? []),
       defenderUsedGambit: true,
-    });
+    }, gameState);
   }
   return pendingCombat;
 }
 
-export function passPendingCombatGambit(pendingCombat: PendingCombat, side: PlayerSide): PendingCombat {
+export function passPendingCombatGambit(pendingCombat: PendingCombat, side: PlayerSide, gameState?: GameState): PendingCombat {
   if (pendingCombat.status !== "gambitWindow") {
     return pendingCombat;
   }
   if (side === pendingCombat.attackerSide) {
-    return withGambitResponse({ ...pendingCombat, attackerPassedGambit: true });
+    return withGambitResponse({ ...pendingCombat, attackerPassedGambit: true }, gameState);
   }
   if (side === pendingCombat.defenderSide) {
-    return withGambitResponse({ ...pendingCombat, defenderPassedGambit: true });
+    return withGambitResponse({ ...pendingCombat, defenderPassedGambit: true }, gameState);
   }
   return pendingCombat;
+}
+
+export function canUseSmokeBomb(pendingCombat: PendingCombat, side: PlayerSide): boolean {
+  return pendingCombat.status === "smokeBombEscape" &&
+    pendingCombat.smokeBombState?.side === side &&
+    Boolean(pendingCombat.smokeBombState.legalEscapeSquares.length);
+}
+
+export function chooseSmokeBombEscape(
+  pendingCombat: PendingCombat,
+  side: PlayerSide,
+  escapeSquare: Position,
+): PendingCombat {
+  if (!canUseSmokeBomb(pendingCombat, side) || !pendingCombat.smokeBombState) {
+    return pendingCombat;
+  }
+  const legal = pendingCombat.smokeBombState.legalEscapeSquares.some((square) => samePosition(square, escapeSquare));
+  if (!legal) {
+    return pendingCombat;
+  }
+  return {
+    ...pendingCombat,
+    smokeBombState: {
+      ...pendingCombat.smokeBombState,
+      selectedEscapeSquare: { ...escapeSquare },
+    },
+    status: "resolved",
+  };
+}
+
+export function passSmokeBomb(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
+  if (pendingCombat.status !== "smokeBombEscape" || !pendingCombat.smokeBombState) {
+    return pendingCombat;
+  }
+  return maybeOpenLastStrikeWindow({
+    ...pendingCombat,
+    smokeBombState: {
+      ...pendingCombat.smokeBombState,
+      passed: true,
+    },
+  }, gameState);
+}
+
+export function canUseLastStrike(pendingCombat: PendingCombat, side: PlayerSide): boolean {
+  return pendingCombat.status === "lastStrikeWindow" &&
+    pendingCombat.lastStrikeState?.side === side &&
+    !pendingCombat.lastStrikeState.resolved &&
+    !pendingCombat.lastStrikeState.passed;
+}
+
+export function playLastStrike(
+  pendingCombat: PendingCombat,
+  side: PlayerSide,
+  options: { dieIndex?: number } = {},
+): PendingCombat {
+  if (!canUseLastStrike(pendingCombat, side) || !pendingCombat.lastStrikeState) {
+    return pendingCombat;
+  }
+  const dieIndex = clampDieIndex(options.dieIndex ?? rollDieIndex());
+  return finalizeRevealPendingCombat({
+    ...pendingCombat,
+    lastStrikeState: {
+      ...pendingCombat.lastStrikeState,
+      dieIndex,
+      success: dieIndex >= 3,
+      resolved: true,
+    },
+  });
+}
+
+export function passLastStrike(pendingCombat: PendingCombat): PendingCombat {
+  if (pendingCombat.status !== "lastStrikeWindow" || !pendingCombat.lastStrikeState) {
+    return pendingCombat;
+  }
+  return finalizeRevealPendingCombat({
+    ...pendingCombat,
+    lastStrikeState: {
+      ...pendingCombat.lastStrikeState,
+      resolved: true,
+      passed: true,
+    },
+  });
 }
 
 export function canPlayBeforeCombatCard(
@@ -331,6 +416,21 @@ export function canPlayBeforeCombatCard(
       piece.type === "Knight" &&
       !hasPlayedCardDefinition(pendingCombat, side, "lance_formation");
   }
+  if (definitionId === "samurai_challenge") {
+    const enemyPiece = side === pendingCombat.attackerSide
+      ? combatPieceForSide(pendingCombat, gameState, pendingCombat.defenderSide)
+      : combatPieceForSide(pendingCombat, gameState, pendingCombat.attackerSide);
+    return gameState.selectedFactions[side] === "sakura_shogunate" &&
+      Boolean(enemyPiece) &&
+      !isAdjacentToFriendlyPiece(gameState, piece) &&
+      !isAdjacentToFriendlyPiece(gameState, enemyPiece!);
+  }
+  if (definitionId === "bone_sacrifice") {
+    return gameState.selectedFactions[side] === "bone_legion" &&
+      side === pendingCombat.attackerSide &&
+      piece.id === pendingCombat.attackerPieceId &&
+      adjacentFriendlyPawns(gameState, piece).length > 0;
+  }
   return false;
 }
 
@@ -353,15 +453,32 @@ export function playBeforeCombatCard(
   if (!piece) {
     return { pendingCombat, gameState };
   }
+  if (definitionId === "bone_sacrifice") {
+    return {
+      pendingCombat: {
+        ...pendingCombat,
+        status: "boneSacrificeSelect",
+        boneSacrificeState: {
+          side,
+          cardInstanceId: card.id,
+          attackerPieceId: piece.id,
+          legalPawnPieceIds: adjacentFriendlyPawns(gameState, piece).map((pawn) => pawn.id),
+        },
+      },
+      gameState,
+    };
+  }
   const value = definitionId === "guan_dao_champion" ? 2 : 1;
   const source = definitionId === "guan_dao_champion"
     ? "Guan Dao Champion"
-    : definitionId === "lance_formation" ? "Lance Formation" : "Dragon Formation";
+    : definitionId === "lance_formation" ? "Lance Formation" : definitionId === "samurai_challenge" ? "Samurai Challenge" : "Dragon Formation";
   const description = definitionId === "guan_dao_champion"
     ? "+2 to Guard combat result"
     : definitionId === "lance_formation"
       ? "+1 to attacking Knight combat result"
-      : `+1 because ${side} ${piece.type} is adjacent to a friendly Guard`;
+      : definitionId === "samurai_challenge"
+        ? "+1 because both combat pieces are isolated"
+        : `+1 because ${side} ${piece.type} is adjacent to a friendly Guard`;
   const modifier = {
     source,
     side,
@@ -388,6 +505,80 @@ export function playBeforeCombatCard(
       ...nextState,
       log: [`${side} plays ${source}: ${modifier.description}.`, ...nextState.log],
     },
+  };
+}
+
+export function chooseBoneSacrificePawn(
+  pendingCombat: PendingCombat,
+  gameState: GameState,
+  side: PlayerSide,
+  pawnPieceId: string,
+): { pendingCombat: PendingCombat; gameState: GameState } {
+  const bone = pendingCombat.boneSacrificeState;
+  if (pendingCombat.status !== "boneSacrificeSelect" || !bone || bone.side !== side || !bone.legalPawnPieceIds.includes(pawnPieceId)) {
+    return { pendingCombat, gameState };
+  }
+  const pawn = gameState.pieces[pawnPieceId];
+  const pawnSquare = pawn ? getPiecePosition(gameState.board, pawnPieceId) : undefined;
+  if (!pawn || pawn.type !== "Pawn" || pawn.side !== side || !pawnSquare) {
+    return { pendingCombat, gameState };
+  }
+  const modifier = {
+    source: "Bone Sacrifice",
+    side,
+    pieceId: bone.attackerPieceId,
+    value: 1,
+    description: "+1 to attacker combat result",
+  };
+  const nextPending = recalculatePendingCombatValues({
+    ...pendingCombat,
+    status: "waitingForBothRolls",
+    attackerModifiers: [...(pendingCombat.attackerModifiers ?? []), modifier],
+    attackerPlayedCardIds: [...(pendingCombat.attackerPlayedCardIds ?? []), "bone_sacrifice"],
+    boneSacrificeState: {
+      ...bone,
+      selectedPawnPieceId: pawnPieceId,
+    },
+  });
+  const withoutCard = moveCardFromHandToDiscard(gameState, side, bone.cardInstanceId);
+  const board = withoutCard.board.map((rank) => rank.map((square) =>
+    square.pieceId === pawnPieceId ? { ...square, pieceId: undefined } : square
+  ));
+  const { [pawnPieceId]: _removed, ...pieces } = withoutCard.pieces;
+  return {
+    pendingCombat: nextPending,
+    gameState: {
+      ...withoutCard,
+      board,
+      pieces,
+      removedPieces: {
+        ...withoutCard.removedPieces,
+        [side]: [
+          ...withoutCard.removedPieces[side],
+          {
+            pieceId: pawn.id,
+            side,
+            type: pawn.type,
+            wasPromoted: pawn.promoted || undefined,
+            removedFrom: pawnSquare,
+            removedReason: "sacrificed",
+            removedTurn: withoutCard.turnNumber,
+          },
+        ],
+      },
+      log: [`${side} sacrifices Pawn at ${coordinateLabel(pawnSquare)}. Bone Sacrifice: +1 to attacker combat result.`, ...withoutCard.log],
+    },
+  };
+}
+
+export function cancelBoneSacrificeSelection(pendingCombat: PendingCombat): PendingCombat {
+  if (pendingCombat.status !== "boneSacrificeSelect") {
+    return pendingCombat;
+  }
+  return {
+    ...pendingCombat,
+    status: "waitingForBothRolls",
+    boneSacrificeState: undefined,
   };
 }
 
@@ -440,7 +631,7 @@ function withStatus(pendingCombat: PendingCombat, gameState?: GameState): Pendin
           !hasCardInHand(gameState, pendingCombat.defenderSide, "basic_gambit"),
       };
     }
-    return revealPendingCombat(pendingCombat);
+    return revealPendingCombat(pendingCombat, gameState);
   }
   if (pendingCombat.attackerDieIndex === undefined && pendingCombat.defenderDieIndex === undefined) {
     return { ...pendingCombat, status: "waitingForBothRolls" };
@@ -451,7 +642,12 @@ function withStatus(pendingCombat: PendingCombat, gameState?: GameState): Pendin
   return { ...pendingCombat, status: "waitingForDefenderRoll" };
 }
 
-function revealPendingCombat(pendingCombat: PendingCombat): PendingCombat {
+function revealPendingCombat(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
+  const revealed = finalizeRevealPendingCombat(pendingCombat);
+  return maybeOpenSakuraReaction(revealed, gameState);
+}
+
+function finalizeRevealPendingCombat(pendingCombat: PendingCombat): PendingCombat {
   const attackerFinalValue = getPendingCombatFinalValue(pendingCombat, "attacker");
   const defenderFinalValue = getPendingCombatFinalValue(pendingCombat, "defender");
   const isTie = attackerFinalValue === defenderFinalValue;
@@ -475,10 +671,10 @@ function hasAnyGambitEligible(pendingCombat: PendingCombat, gameState: GameState
     hasCardInHand(gameState, pendingCombat.defenderSide, "basic_gambit");
 }
 
-function withGambitResponse(pendingCombat: PendingCombat): PendingCombat {
+function withGambitResponse(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
   const attackerDone = pendingCombat.attackerUsedGambit || pendingCombat.attackerPassedGambit;
   const defenderDone = pendingCombat.defenderUsedGambit || pendingCombat.defenderPassedGambit;
-  return attackerDone && defenderDone ? revealPendingCombat(pendingCombat) : pendingCombat;
+  return attackerDone && defenderDone ? revealPendingCombat(pendingCombat, gameState) : pendingCombat;
 }
 
 function continueAfterBreakthrough(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
@@ -495,7 +691,96 @@ function continueAfterBreakthrough(pendingCombat: PendingCombat, gameState?: Gam
         !hasCardInHand(gameState, pendingCombat.defenderSide, "basic_gambit"),
     };
   }
-  return revealPendingCombat(pendingCombat);
+  return revealPendingCombat(pendingCombat, gameState);
+}
+
+function maybeOpenSakuraReaction(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
+  if (!gameState || !pendingCombat.attackerWins) {
+    return pendingCombat;
+  }
+  const smoke = createSmokeBombState(pendingCombat, gameState);
+  if (smoke) {
+    return {
+      ...pendingCombat,
+      status: "smokeBombEscape",
+      smokeBombState: smoke,
+      resolveAfterAt: undefined,
+    };
+  }
+  return maybeOpenLastStrikeWindow(pendingCombat, gameState);
+}
+
+function maybeOpenLastStrikeWindow(pendingCombat: PendingCombat, gameState?: GameState): PendingCombat {
+  if (!gameState || !pendingCombat.attackerWins) {
+    return pendingCombat.status === "smokeBombEscape" ? finalizeRevealPendingCombat(pendingCombat) : pendingCombat;
+  }
+  const lastStrike = createLastStrikeState(pendingCombat, gameState);
+  if (lastStrike) {
+    return {
+      ...pendingCombat,
+      status: "lastStrikeWindow",
+      lastStrikeState: lastStrike,
+      resolveAfterAt: undefined,
+    };
+  }
+  return finalizeRevealPendingCombat({
+    ...pendingCombat,
+    smokeBombState: pendingCombat.smokeBombState,
+  });
+}
+
+function createSmokeBombState(pendingCombat: PendingCombat, gameState: GameState): PendingCombat["smokeBombState"] | undefined {
+  const defender = gameState.pieces[pendingCombat.defenderPieceId];
+  if (
+    !defender ||
+    defender.type !== "Bishop" ||
+    gameState.selectedFactions[defender.side] !== "sakura_shogunate" ||
+    pendingCombat.smokeBombState?.passed ||
+    pendingCombat.smokeBombState?.selectedEscapeSquare
+  ) {
+    return undefined;
+  }
+  const card = gameState.cards[defender.side].hand.find((entry) => cardDefinitionId(entry) === "smoke_bomb" && entry.implemented);
+  if (!card) {
+    return undefined;
+  }
+  const legalEscapeSquares = emptyAdjacentSquares(gameState, pendingCombat.defenderSquare);
+  if (!legalEscapeSquares.length) {
+    return undefined;
+  }
+  return {
+    side: defender.side,
+    bishopPieceId: defender.id,
+    attackerPieceId: pendingCombat.attackerPieceId,
+    bishopOriginalSquare: { ...pendingCombat.defenderSquare },
+    legalEscapeSquares,
+    cardInstanceId: card.id,
+  };
+}
+
+function createLastStrikeState(pendingCombat: PendingCombat, gameState: GameState): PendingCombat["lastStrikeState"] | undefined {
+  const defender = gameState.pieces[pendingCombat.defenderPieceId];
+  if (
+    !defender ||
+    (defender.type !== "Bishop" && defender.type !== "Guard") ||
+    gameState.selectedFactions[defender.side] !== "sakura_shogunate" ||
+    pendingCombat.lastStrikeState?.resolved ||
+    pendingCombat.smokeBombState?.selectedEscapeSquare
+  ) {
+    return undefined;
+  }
+  const card = gameState.cards[defender.side].hand.find((entry) => cardDefinitionId(entry) === "last_strike" && entry.implemented);
+  if (!card) {
+    return undefined;
+  }
+  return {
+    side: defender.side,
+    capturedPieceId: defender.id,
+    capturedPieceType: defender.type,
+    attackingPieceId: pendingCombat.attackerPieceId,
+    cardInstanceId: card.id,
+    resolved: false,
+  };
 }
 
 function shouldOpenBreakthroughWindow(pendingCombat: PendingCombat): boolean {
@@ -534,6 +819,10 @@ function isAdjacentToFriendlyPiece(gameState: GameState, piece: Piece): boolean 
   return adjacentFriendlyPieces(gameState, piece).length > 0;
 }
 
+function adjacentFriendlyPawns(gameState: GameState, piece: Piece): Piece[] {
+  return adjacentFriendlyPieces(gameState, piece).filter((friendly) => friendly.type === "Pawn" && friendly.id !== piece.id);
+}
+
 function adjacentFriendlyPieces(gameState: GameState, piece: Piece): Piece[] {
   const from = getPiecePosition(gameState.board, piece.id);
   if (!from) {
@@ -564,6 +853,14 @@ function adjacentSquares(position: Position): Position[] {
     }
   }
   return squares;
+}
+
+function emptyAdjacentSquares(gameState: GameState, position: Position): Position[] {
+  return adjacentSquares(position).filter((square) => !getSquare(gameState.board, square)?.pieceId);
+}
+
+function samePosition(a: Position, b: Position): boolean {
+  return a.col === b.col && a.row === b.row;
 }
 
 function rollDieIndex(): number {
